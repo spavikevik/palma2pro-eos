@@ -468,6 +468,47 @@ worth knowing before writing any SurfaceFlinger code.
 It also means the four ioctls are safe to call and safe to ignore: they are
 configuration, and configuration is not what is missing.
 
+## /dev/ebc's userspace push path is NOT usable -- three attempts, three hangs
+
+Upstream Rockchip's designed flow is `EBC_GET_BUFFER` -> mmap -> draw ->
+`EBC_SEND_BUFFER` (docs/13). `src/ebcpush.c` implements exactly that, in stages.
+It never gets past the first call:
+
+| attempt | precondition | result |
+|---|---|---|
+| `ebctool refresh --go` | everything running | hang |
+| `ebcprobe 1` | surfaceflinger stopped, composer RUNNING | hang |
+| `ebcpush 1` | **surfaceflinger AND composer both stopped** | hang |
+
+The third is the one that matters. `init.svc.surfaceflinger=stopped`,
+`init.svc.vendor.qti.hardware.display.composer=stopped`, zero matching
+processes -- and `EBC_GET_BUFFER` still blocks forever.
+
+**So the free-buffer queue is not held by userspace.** Stopping every process
+that touches the display changes nothing. The wait is on something internal to
+the driver: a queue that is never primed, or one that only fills once the
+kernel's EPD pipeline has been started through a path we have not triggered.
+The `mdss_fb_epdc` / `epdc_refresh_waveform_task` / `commit_epdc` kernel threads
+seen sitting in `D` state are plausibly the other end of it.
+
+Nothing is logged during the hang -- `dmesg` captured with `sync` every second
+shows the last EPD line ~2 s BEFORE the call and nothing after. A silent
+`wait_event`, exactly as the upstream design implies.
+
+Do not attempt a fourth variation. The composer path is the only way in.
+
+### Also seen: a CRTC-level EPDC commit path
+
+Alongside the plane-level `__sde_plane_atomic_update_epdc`, the kernel has
+
+```
+[drm:sde_crtc_prepare_commit_epdc:2320] plane[80[plane-1] plane->state != old_planestate!
+sde_crtc_complete_commit_epdc(): crtc[...] is not is_dummy, dont release fence.
+```
+
+so the EPD commit is handled at both plane and CRTC level, and the CRTC half
+deals with fences. Worth knowing when implementing the composer-side path.
+
 ## Why their SF does not finish starting
 
 ```
