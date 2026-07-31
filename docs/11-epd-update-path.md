@@ -1133,3 +1133,59 @@ forces one every `persist.epdcshim.fullevery` updates on its own.
 /dev/epdc/damage` once on success. After that, a keystroke should produce a
 small rectangle rather than a whole-panel repaint; compare
 `waveform_clean_work_handler` rates and watch which part of the panel flashes.
+
+## Writer side: implemented
+
+`patches/main/0002-frameworks-native-surfaceflinger-publish-epd-damage.patch`,
+against `frameworks/native`. The contract header is installed into the AOSP tree
+at `CompositionEngine/include/compositionengine/epdc_damage.h` (copy of
+`src/epdc_damage.h` -- one header for both sides so the layout cannot drift).
+
+**Correction to the spec above:** it named `Output.cpp:1247` as the hook. That
+line is inside `devOptRepaintFlash`, which returns immediately unless
+`devOptFlashDirtyRegionsDelay` is set -- a debug-only path that never runs in a
+normal build. The publisher is in `Output::finishFrame` instead, right after the
+`isEnabled` check, which is on the real composition path.
+
+```cpp
+if (getDisplayId()) {
+    publishEpdcDamage(outputState.transform.transform(getDirtyRegion()),
+                      /*forceFull=*/false);
+}
+```
+
+* `getDisplayId()` restricts publication to physical displays. A virtual output
+  (casting, screen recording) has its own unrelated damage and would otherwise
+  refresh the panel for content that is not on it.
+* `outputState.transform` converts layer stack space (824x1648 portrait) to
+  output space (1648x824 landscape). The panel is installed rotated, so
+  publishing untransformed coordinates would refresh a plausible-looking but
+  wrong region.
+* More than `EPDC_DAMAGE_MAX` (8) rectangles collapse to `getBounds()`. An
+  over-large rectangle only costs refresh time; a dropped one leaves stale
+  pixels.
+* The first publication after mapping sets `full=1`: what is on the panel at
+  that moment is unknown, so honouring damage alone would leave stale pixels.
+
+## Launcher: animations were the idle repaints
+
+The /e/OS launcher repainted ~1 Hz with no input, which on this panel means a
+full-screen refresh every second. It was not the status bar clock
+(`clock_seconds` is unset; forcing it to 0 changed nothing) and not the widgets
+(the app-grid page did it too). It was **animation**:
+
+```sh
+settings put global window_animation_scale 0
+settings put global transition_animation_scale 0
+settings put global animator_duration_scale 0
+```
+
+| | idle updates / 10 s |
+|---|---|
+| before | 10-13 |
+| after | **0** (and zero changed pixels between frames two seconds apart) |
+
+These are `global` settings, so they survive a reboot, but they belong in the
+product configuration. Disabling animation is worth doing on this device for its
+own sake: every animation frame was a full-panel repaint, so animations cost far
+more here than on an LCD.

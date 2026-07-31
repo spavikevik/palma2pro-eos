@@ -1,0 +1,134 @@
+diff --git a/services/surfaceflinger/CompositionEngine/src/Output.cpp b/services/surfaceflinger/CompositionEngine/src/Output.cpp
+index eac7fbd1d6..12dc5eda3f 100644
+--- a/services/surfaceflinger/CompositionEngine/src/Output.cpp
++++ b/services/surfaceflinger/CompositionEngine/src/Output.cpp
+@@ -27,6 +27,13 @@
+ #include <compositionengine/UdfpsExtension.h>
+ #include <compositionengine/impl/HwcAsyncWorker.h>
+ #include <compositionengine/impl/Output.h>
++// EPD damage publication -- see docs/11 in the palma2pro-eos repo.
++#include <compositionengine/epdc_damage.h>
++#include <cerrno>
++#include <cstring>
++#include <fcntl.h>
++#include <sys/mman.h>
++#include <unistd.h>
+ #include <compositionengine/impl/OutputCompositionState.h>
+ #include <compositionengine/impl/OutputLayer.h>
+ #include <compositionengine/impl/OutputLayerCompositionState.h>
+@@ -1262,6 +1269,95 @@ void Output::devOptRepaintFlash(const compositionengine::CompositionRefreshArgs&
+     prepareFrame();
+ }
+ 
++
++namespace {
++
++// Publish SurfaceFlinger's dirty region for the EPD composer shim.
++//
++// The e-ink panel refreshes per rectangle, but nothing in the normal stack can
++// carry that information down: the DRM planes expose no FB_DAMAGE_CLIPS, and
++// this panel requires client composition, which leaves a single full-screen
++// plane whose CRTC rect is always the whole display. Without this, the shim has
++// to refresh all 1648x824 pixels for a single changed character -- slow, and it
++// ghosts the whole panel instead of one region. See docs/11.
++//
++// Single writer here, single reader in libepdcshim.so, no locking: a seqlock.
++// Both sides sit on the frame path, so neither may block the other.
++epdc_damage_shm* epdcDamageMap() {
++    static epdc_damage_shm* sMap = []() -> epdc_damage_shm* {
++        int fd = open(EPDC_DAMAGE_PATH, O_RDWR | O_CREAT | O_CLOEXEC, 0660);
++        if (fd < 0) {
++            ALOGI("epdc: no damage map (%s): %s", EPDC_DAMAGE_PATH, strerror(errno));
++            return nullptr;
++        }
++        if (ftruncate(fd, 4096) != 0) {
++            ALOGW("epdc: ftruncate failed: %s", strerror(errno));
++            close(fd);
++            return nullptr;
++        }
++        void* m = mmap(nullptr, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
++        close(fd);
++        if (m == MAP_FAILED) {
++            ALOGW("epdc: mmap failed: %s", strerror(errno));
++            return nullptr;
++        }
++
++        auto* s = static_cast<epdc_damage_shm*>(m);
++        // Ask for one full pass first: what is currently on the panel is
++        // unknown here, so honouring damage alone would leave stale pixels.
++        s->count = 0;
++        s->full = 1;
++        s->version = EPDC_DAMAGE_VERSION;
++        __atomic_store_n(&s->seq, 2u, __ATOMIC_RELAXED);
++        // magic last, with release ordering: the reader must never attach to a
++        // half-initialised mapping.
++        __atomic_store_n(&s->magic, EPDC_DAMAGE_MAGIC, __ATOMIC_RELEASE);
++        ALOGI("epdc: publishing damage to %s", EPDC_DAMAGE_PATH);
++        return s;
++    }();
++    return sMap;
++}
++
++void publishEpdcDamage(const Region& damage, bool forceFull) {
++    auto* s = epdcDamageMap();
++    if (!s) return;
++
++    uint32_t n = 0;
++    epdc_damage_rect rects[EPDC_DAMAGE_MAX];
++
++    if (!forceFull) {
++        size_t total = 0;
++        for (auto it = damage.begin(), end = damage.end(); it != end; ++it) {
++            ++total;
++        }
++        if (total > 0 && total <= EPDC_DAMAGE_MAX) {
++            for (auto it = damage.begin(), end = damage.end();
++                 it != end && n < EPDC_DAMAGE_MAX; ++it, ++n) {
++                rects[n] = {it->left, it->top, it->right, it->bottom};
++            }
++        } else if (total > EPDC_DAMAGE_MAX) {
++            // The kernel takes at most EPDC_DAMAGE_MAX rectangles. When the
++            // region is finer than that, collapse to its bounds: an over-large
++            // rectangle only costs refresh time, whereas dropping one leaves
++            // stale pixels on screen.
++            const Rect b = damage.getBounds();
++            rects[0] = {b.left, b.top, b.right, b.bottom};
++            n = 1;
++        }
++    }
++
++    const uint32_t seq = __atomic_load_n(&s->seq, __ATOMIC_RELAXED) + 1;
++    __atomic_store_n(&s->seq, seq, __ATOMIC_RELEASE);      // odd: writing
++    s->count = n;
++    s->full = (forceFull || n == 0) ? 1u : 0u;
++    for (uint32_t i = 0; i < n; i++) {
++        s->rect[i] = rects[i];
++    }
++    __atomic_store_n(&s->seq, seq + 1, __ATOMIC_RELEASE);  // even: stable
++}
++
++} // namespace
++
+ void Output::finishFrame(GpuCompositionResult&& result) {
+     SFTRACE_CALL();
+     ALOGV(__FUNCTION__);
+@@ -1270,6 +1366,19 @@ void Output::finishFrame(GpuCompositionResult&& result) {
+         return;
+     }
+ 
++    // Hand the dirty region to the EPD shim. Physical displays only -- a
++    // virtual output (casting, recording) has its own unrelated damage and
++    // would otherwise refresh the panel for content that is not on it.
++    //
++    // getDirtyRegion() is layer stack space (824x1648 portrait); the kernel
++    // blits the plane in output space (1648x824 landscape, the panel is
++    // installed rotated), so it must be transformed first. Publishing layer
++    // stack coordinates would refresh a plausible-looking but wrong region.
++    if (getDisplayId()) {
++        publishEpdcDamage(outputState.transform.transform(getDirtyRegion()),
++                          /*forceFull=*/false);
++    }
++
+     std::optional<base::unique_fd> optReadyFence;
+     std::shared_ptr<renderengine::ExternalTexture> buffer;
+     base::unique_fd bufferFence;
