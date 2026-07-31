@@ -118,8 +118,12 @@ static int t_wf       = 2;
 static int t_upd      = 1;
 static int t_flag     = 0x21000;
 static int t_interval;
+static int t_fastwf;      /* waveform to use while the screen is in motion   */
+static int t_fastms  = 250;
+static int t_fullevery;   /* force a full-flash clean every N updates        */
 static int commits_since_recheck = RECHECK;   /* force a read on first commit */
 static long last_inject_ms;
+static int updates_since_full;
 
 /* DRM_MODE_ATOMIC_TEST_ONLY: a validation pass, not a real frame. Injecting
  * there would ask the panel to redraw for every check the composer makes. */
@@ -145,9 +149,17 @@ static u32 c_parms_prop[MAX_OBJ];
 static u32 c_cnt_prop[MAX_OBJ];
 static int c_n;
 
-/* object ids the composer itself placed in the current request */
+/* object ids the composer itself placed in the current request, and the FB_ID
+ * it set on each. A commit that presents the same buffers as the one we last
+ * acted on has nothing new to show, so driving the panel for it is pure
+ * flashing -- SurfaceFlinger keeps committing at idle (clock, cursor, settling
+ * animations) and every one of those was costing a full-panel repaint. */
 static u32 pend[MAX_OBJ];
+static u32 pend_fb[MAX_OBJ];
 static int n_pend;
+static u32 g_fbid_prop;          /* learned from the property enumeration */
+static u32 last_fb_sig;
+static int t_skipsame = 1;
 
 static int str_eq(const char *a, const char *b)
 {
@@ -216,16 +228,50 @@ static void refresh_tunables(void)
     t_upd      = (int)prop_num("persist.epdcshim.upd", 1);
     t_flag     = (int)prop_num("persist.epdcshim.flag", 0x21000);
     t_interval = (int)prop_num("persist.epdcshim.interval", 0);
+    t_fastwf   = (int)prop_num("persist.epdcshim.fastwf", 0);
+    t_fastms   = (int)prop_num("persist.epdcshim.fastms", 250);
+    t_fullevery= (int)prop_num("persist.epdcshim.fullevery", 0);
+    t_skipsame = (int)prop_num("persist.epdcshim.skipsame", 1);
 }
 
-static void init_parms(void)
+/* There is no damage information available: the DRM planes expose no
+ * FB_DAMAGE_CLIPS, and under client composition (which this panel requires,
+ * since __sde_plane_atomic_update_epdc drops any plane smaller than the panel)
+ * there is a single full-screen plane whose CRTC rect is always the whole
+ * display. So every update is unavoidably full-screen until real damage is
+ * plumbed down from SurfaceFlinger.
+ *
+ * What is left is the refresh *policy*, which is where e-readers get their
+ * feel. Two levers, both standard (Kobo/KOReader, PineNote):
+ *
+ *   motion   while frames are arriving quickly the content is moving, so
+ *            quality is wasted -- use a fast waveform and let it be rough
+ *   cleanup  partial waveforms leave residue, so every N updates do one
+ *            full-flash pass to clear the panel
+ *
+ * dt is measured against the previous *injected* update, so a burst of commits
+ * counts as motion even when we are throttling.
+ */
+static void init_parms(long dt_ms)
 {
+    int wf  = t_wf;
+    int upd = t_upd;
+
+    if (t_fastwf > 0 && dt_ms >= 0 && dt_ms < t_fastms)
+        wf = t_fastwf;                       /* screen is moving */
+
+    if (t_fullevery > 0 && ++updates_since_full >= t_fullevery) {
+        updates_since_full = 0;
+        wf  = t_wf;                          /* quality waveform ... */
+        upd = 1;                             /* ... and a full flash */
+    }
+
     g_parms[0].rect[0] = 0;
     g_parms[0].rect[1] = 0;
     g_parms[0].rect[2] = PANEL_W;
     g_parms[0].rect[3] = PANEL_H;
-    g_parms[0].waveform_mode = t_wf;
-    g_parms[0].update_mode   = t_upd;
+    g_parms[0].waveform_mode = wf;
+    g_parms[0].update_mode   = upd;
     g_parms[0].flag          = t_flag;
     g_parms[0].temp          = 0;
     g_parms[0].reserved      = 0;
@@ -247,15 +293,25 @@ static int lookup(int fd, u32 obj)
 
     objprops_t *op = p_get_objprops(fd, obj, DRM_MODE_OBJECT_PLANE);
     if (!op) return idx;                       /* not a plane -- remembered */
+    /* Dump the property vocabulary once. We need to know whether the composer
+     * exposes FB_DAMAGE_CLIPS: that is the standard DRM plane property carrying
+     * changed regions, and the kernel takes up to 8 update rects, so it would
+     * let this shim do real partial updates instead of a blanket full-screen
+     * one. Logged only for the first plane examined. */
+    static int dumped;
     for (u32 i = 0; i < op->count_props; i++) {
         propres_t *pr = p_get_prop(fd, op->props[i]);
         if (!pr) continue;
+        if (!dumped) LOGI("  prop[%u] %s", pr->prop_id, pr->name);
+        if (str_eq(pr->name, "FB_ID"))
+            g_fbid_prop = pr->prop_id;
         if (str_eq(pr->name, "EPDC_UPDATE_PARMS_ADDR"))
             c_parms_prop[idx] = pr->prop_id;
         else if (str_eq(pr->name, "EPDC_UPDATE_CNT"))
             c_cnt_prop[idx] = pr->prop_id;
         if (p_free_prop) p_free_prop(pr);
     }
+    dumped = 1;
     if (p_free_objprops) p_free_objprops(op);
 
     if (c_parms_prop[idx] && c_cnt_prop[idx])
@@ -271,10 +327,16 @@ int drmModeAtomicAddProperty(void *req, u32 object_id, u32 property_id, u64 valu
     resolve();
     /* Record only; never inject here. At this point we have no fd, and the
      * request is still being assembled. */
-    int seen = 0;
+    int slot = -1;
     for (int i = 0; i < n_pend; i++)
-        if (pend[i] == object_id) { seen = 1; break; }
-    if (!seen && n_pend < MAX_OBJ) pend[n_pend++] = object_id;
+        if (pend[i] == object_id) { slot = i; break; }
+    if (slot < 0 && n_pend < MAX_OBJ) {
+        slot = n_pend++;
+        pend[slot] = object_id;
+        pend_fb[slot] = 0;
+    }
+    if (slot >= 0 && g_fbid_prop && property_id == g_fbid_prop)
+        pend_fb[slot] = (u32)value;
 
     return real_add(req, object_id, property_id, value);
 }
@@ -292,16 +354,28 @@ int drmModeAtomicCommit(int fd, void *req, u32 flags, void *user_data)
 
     if (!t_enable) { n_pend = 0; return real_commit(fd, req, flags, user_data); }
 
-    if (t_interval > 0) {
-        long t = now_ms();
-        if (t - last_inject_ms < t_interval) {
+    /* Nothing new on screen? Then do not drive the panel. */
+    if (t_skipsame && g_fbid_prop) {
+        u32 sig = 0;
+        for (int i = 0; i < n_pend; i++)
+            sig = sig * 31u + pend[i] * 131u + pend_fb[i];
+        if (sig == last_fb_sig) {
             n_pend = 0;
             return real_commit(fd, req, flags, user_data);
         }
-        last_inject_ms = t;
+        last_fb_sig = sig;
     }
 
-    init_parms();
+    long t  = now_ms();
+    long dt = last_inject_ms ? t - last_inject_ms : -1;
+
+    if (t_interval > 0 && dt >= 0 && dt < t_interval) {
+        n_pend = 0;
+        return real_commit(fd, req, flags, user_data);
+    }
+    last_inject_ms = t;
+
+    init_parms(dt);
     g_parms[0].update_marker++;
 
     for (int i = 0; i < n_pend; i++) {

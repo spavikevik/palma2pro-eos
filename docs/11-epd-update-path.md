@@ -984,3 +984,81 @@ argument before its output means anything.
 Cosmetic, noticed once the panel came up: the launcher renders shifted left with
 black at the right edge, and dark theme is the default (bad on e-ink -- `cmd
 uimode night no`).
+
+## Refresh policy, and why partial updates are not reachable from the shim
+
+Enumerating every DRM plane property (dumped by the shim itself) settles the
+question of damage:
+
+```
+type FB_ID IN_FENCE_FD CRTC_ID CRTC_X CRTC_Y CRTC_W CRTC_H
+SRC_X SRC_Y SRC_W SRC_H zpos alpha input_fence excl_rect_v1 rotation
+blend_op src_config color_fill prefill_size prefill_time capabilities
+inverse_pma csc_dma_v1 SDE_DGM_1D_LUT_IGC_V5 SDE_DGM_1D_LUT_GC_V5
+fb_translation_mode EPDC_UPDATE_PARMS_ADDR EPDC_UPDATE_CNT
+```
+
+**There is no `FB_DAMAGE_CLIPS`.** And client composition -- which this panel
+*requires*, see below -- collapses everything into a single full-screen plane
+whose `CRTC_W/H` is always the whole display. So the shim has no way to know
+what changed, and every update is necessarily full-panel. Real partial updates
+need damage from SurfaceFlinger.
+
+### Client composition is mandatory, not a preference
+
+`__sde_plane_atomic_update_epdc` accepts only planes exactly the size of the
+panel. Any layer the composer promotes to its own hardware plane is therefore
+dropped and never reaches the e-ink buffer -- drawn, clickable, invisible:
+
+```
+width[53]  height[824]   <- navigation bar
+width[90]  height[824]   <- status bar
+width[38]  height[824]   <- gesture handle
+```
+
+This is why the nav bar could be tapped but not seen. `service call
+SurfaceFlinger 1008 i32 1` (`mDebugDisableHWC`) merges everything into one
+full-panel plane and they all appear. It resets on **every** SF restart, so
+`system/etc/init/epdc-clientcomp.rc` re-applies it on
+`property:init.svc.surfaceflinger=running`. The durable fix is to default it in
+our SF source, since we build it.
+
+Note also: the nav bar does not exist at all unless `qemu.hw.mainkeys=0` is set
+before WindowManager starts (`config_showNavigationBar` is false for this
+device). That needs to move into a build.prop to survive a reboot.
+
+### What the policy does instead
+
+Since the *what* cannot be narrowed, the shim controls the *when* and the *how*,
+which is where e-readers get their feel (Kobo/KOReader, PineNote):
+
+| property | effect |
+|---|---|
+| `persist.epdcshim.interval` | ms floor between updates. Was firing on every atomic commit -- up to 60 full-panel repaints a second, which was most of the slowness. |
+| `persist.epdcshim.fullevery` | one full-flash GC16 clean every N updates, to clear the residue partial waveforms leave |
+| `persist.epdcshim.fastwf` / `fastms` | while frames arrive faster than `fastms` the screen is moving, so quality is wasted -- use a cheaper waveform |
+| `persist.epdcshim.skipsame` | skip commits presenting the same `FB_ID`s as the last one acted on |
+
+`skipsame` is the one that matters for idle. SurfaceFlinger commits even when
+nothing changes, and each of those was costing a full-panel repaint. Measured
+by counting the driver's own `waveform_clean_work_handler` per update:
+
+| screen | idle updates / 10 s |
+|---|---|
+| Settings (static) | **0** |
+| /e/OS Bliss launcher | 10-13 |
+
+Zero on a static screen, so the suppression is correct. The launcher genuinely
+repaints ~1 Hz on its own -- confirmed by diffing two screencaps two seconds
+apart, which shows changed pixels in two bands (y 0..49 and y 300..399). It is
+not the status bar clock: `clock_seconds` is unset and forcing it to 0 changes
+nothing. That is a launcher-level behaviour the shim cannot distinguish from a
+real content change; a different launcher would avoid it.
+
+### The shortcut to real partial updates
+
+Rather than reverse engineering Onyx's private SF->composer transport (option C
+proper), our own SurfaceFlinger could publish its damage rectangles into a small
+shared-memory region that the shim reads and turns into up to 8 update rects --
+which is exactly the kernel's array size. That skips the unknown transport
+entirely and needs only an SF rebuild.
