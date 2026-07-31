@@ -172,7 +172,8 @@ PRODUCT_COPY_FILES += \
 # --- odm -------------------------------------------------------------------
 # Built solely so /odm/etc/fstab.default can override Onyx's
 # /vendor/etc/fstab.default, which is the copy vold actually reads. See odm.mk.
-$(call inherit-product, $(DEVICE_PATH)/odm.mk)
+# Disabled with BOARD_USES_ODMIMAGE -- building odm breaks the boot, see BoardConfig.mk
+# $(call inherit-product, $(DEVICE_PATH)/odm.mk)
 
 # --- Overlays --------------------------------------------------------------
 DEVICE_PACKAGE_OVERLAYS += $(DEVICE_PATH)/overlay
