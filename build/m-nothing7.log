@@ -1,0 +1,31 @@
+22:58:01 Build sandboxing disabled due to nsjail error.
+22:58:10 ************************************************************
+22:58:10 You are building on a machine with 12.6GB of RAM
+22:58:10 
+22:58:10 The minimum required amount of free memory is around 16GB,
+22:58:10 and even with that, some configurations may not work.
+22:58:10 
+22:58:10 If you run into segfaults or other errors, try reducing your
+22:58:10 -j value.
+22:58:10 ************************************************************
+Running product configuration...
+============================================
+PLATFORM_VERSION_CODENAME=REL
+PLATFORM_VERSION=15
+LINEAGE_VERSION=4.2-a15-20260729-UNOFFICIAL-Palma2_Pro_C
+TARGET_PRODUCT=lineage_Palma2_Pro_C
+TARGET_BUILD_VARIANT=userdebug
+TARGET_ARCH=arm64
+TARGET_ARCH_VARIANT=armv8-2a-dotprod
+TARGET_CPU_VARIANT=cortex-a76
+TARGET_2ND_ARCH=arm
+TARGET_2ND_ARCH_VARIANT=armv8-a
+TARGET_2ND_CPU_VARIANT=cortex-a76
+HOST_OS=linux
+HOST_OS_EXTRA=Linux-6.12.13-200.fc41.aarch64-x86_64-Ubuntu-22.04.5-LTS
+HOST_CROSS_OS=windows
+BUILD_ID=BP1A.250505.005
+OUT_DIR=out
+============================================
+[100% 1/1] bootstrap blueprint
+Running globs...

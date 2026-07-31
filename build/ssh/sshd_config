@@ -1,0 +1,59 @@
+# sshd policy for the AOSP build container. Key-only, no forwarding, no root.
+#
+# `AllowUsers` is NOT set here -- the entrypoint appends it from ALLOWED_FROM so
+# the host allow-list cannot be baked into the image and forgotten. sshd refuses
+# to start if that line is missing, which is the intended fail-closed behaviour.
+
+Port 22
+AddressFamily any
+ListenAddress 0.0.0.0
+
+# Host keys live in a persisted volume so the fingerprint is stable across
+# restarts -- otherwise clients cannot pin it and every reconnect looks like a
+# MITM.
+HostKey /etc/ssh/hostkeys/ssh_host_ed25519_key
+HostKey /etc/ssh/hostkeys/ssh_host_rsa_key
+
+# --- Authentication: keys only ---------------------------------------------
+PubkeyAuthentication yes
+AuthenticationMethods publickey
+PasswordAuthentication no
+PermitEmptyPasswords no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+GSSAPIAuthentication no
+HostbasedAuthentication no
+UsePAM no
+PermitRootLogin no
+
+AuthorizedKeysFile /home/builder/.ssh/authorized_keys
+
+# --- Blast-radius limits ---------------------------------------------------
+# A stolen key should get a build shell, not a foothold in the build host's
+# network. rsync and repo work fine without any of these.
+AllowTcpForwarding no
+AllowStreamLocalForwarding no
+GatewayPorts no
+X11Forwarding no
+AllowAgentForwarding no
+PermitTunnel no
+PermitUserRC no
+
+MaxAuthTries 3
+MaxSessions 10
+LoginGraceTime 30
+ClientAliveInterval 60
+ClientAliveCountMax 10
+
+# Long builds must survive an idle client.
+TCPKeepAlive yes
+
+# Log auth attempts to stderr so `docker logs` shows them.
+SyslogFacility AUTH
+LogLevel VERBOSE
+
+PrintMotd no
+PrintLastLog no
+AcceptEnv LANG LC_*
+
+Subsystem sftp internal-sftp

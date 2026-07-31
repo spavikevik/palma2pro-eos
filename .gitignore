@@ -1,0 +1,19 @@
+# Device-specific dumps. Contain IMEI, serials, DRM/attestation keys, and
+# proprietary Onyx blobs. Never commit these.
+backup/
+firmware/
+out/
+
+# Third-party checkouts (bkerler/edl and friends) -- not ours to vendor.
+edl/
+
+# Recon output has device identifiers in it; keep it local.
+*-recon.txt
+
+*.img
+*.bin
+*.upx
+*.zip
+payload.bin
+
+.DS_Store

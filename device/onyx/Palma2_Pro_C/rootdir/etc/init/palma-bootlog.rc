@@ -1,0 +1,51 @@
+# Dump boot diagnostics somewhere readable WITHOUT adb and WITHOUT /data.
+#
+# Every failure this port has hit was diagnosed blind:
+#   * a non-stock system never brings USB up on this device (measured: 46s of no
+#     enumeration during a GSI boot; same again for our own first boot), because
+#     USB gadget setup goes through Onyx's Android 11 vendor HAL
+#   * /data is FBE+metadata encrypted, so logcatd's output under /data/misc/logd
+#     cannot be read from EDL or from another system
+#   * pstore holds only a 128 KB bit-rotted tail of the KERNEL log, no userspace
+#
+# `logdump` is a 64 MiB Qualcomm diagnostic partition that is never armed on a
+# retail unit -- verified all-zero by reading it over EDL. `rawdump` (128 MiB) is
+# likewise empty. Writing there means the log survives a failed boot and is
+# readable with a plain `edl r logdump ...`.
+#
+# Looping `-d` dumps rather than streaming: a streaming redirect is block
+# buffered and an abrupt reboot loses the tail, which is exactly the part that
+# matters. Each pass rewrites the whole buffer, so the last completed write is
+# self-contained.
+#
+# REMOVE bringup-debug.mk TO DISABLE ALL OF THIS.
+
+service palma_bootlog /system/bin/sh -c "while true; do /system/bin/dmesg > /dev/block/bootdevice/by-name/rawdump 2>/dev/null; /system/bin/logcat -b all -d -v threadtime > /dev/block/bootdevice/by-name/logdump 2>/dev/null; sleep 2; done"
+    user root
+    group root log readproc
+    disabled
+    seclabel u:r:su:s0
+
+# TRIGGER AS EARLY AS POSSIBLE.
+#
+# This first ran only `on post-fs-data` and captured NOTHING -- logdump and
+# rawdump were both still all-zero after a failed boot. Combined with /metadata's
+# ext4 superblock showing mount count 3 (so first-stage mount succeeds every
+# time), that pins the failure between first-stage mount and post-fs-data, i.e.
+# BEFORE the only trigger we had.
+#
+# `early-init` and `init` run in second-stage init right after policy load, and
+# /system is already mounted by first-stage mount, so /system/bin/sh and
+# /system/bin/dmesg both exist. logcat will be empty until logd starts -- that is
+# fine, dmesg carries init's own messages, which is what we actually need.
+on early-init
+    start palma_bootlog
+
+on init
+    start palma_bootlog
+
+on post-fs-data
+    start palma_bootlog
+
+on boot
+    start palma_bootlog

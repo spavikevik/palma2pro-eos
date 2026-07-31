@@ -1,0 +1,61 @@
+# AOSP / LineageOS / e-OS build environment.
+#
+# Runs inside the podman VM "aosp". Two things matter about where and how:
+#
+#   * The source tree lives on the VM's own XFS disk (/var/aosp -> /aosp), NOT
+#     on a virtiofs mount from macOS. AOSP touches millions of small files and
+#     virtiofs makes that painful.
+#
+#   * MUST be x86_64. AOSP ships its host toolchain only as
+#     prebuilts/clang/host/linux-x86; there is no supported aarch64 Linux host
+#     build, and LineageOS/e-OS require x86_64. On this Apple Silicon host the
+#     VM registers Rosetta (not qemu) as the x86_64 binfmt interpreter, and a
+#     CPU-bound benchmark measured 17.9s under Rosetta vs 17.8s native -- i.e.
+#     no meaningful penalty. Build with:  podman build --arch amd64
+#
+# The i386 dev packages below only exist on amd64, so an arm64 build of this
+# file fails at apt -- which is the quickest way to notice the arch is wrong.
+FROM --platform=linux/amd64 docker.io/library/ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git git-lfs gnupg flex bison build-essential zip curl zlib1g-dev \
+      libc6-dev-i386 x11proto-core-dev libx11-dev lib32z1-dev libgl1-mesa-dev \
+      libxml2-utils xsltproc unzip fontconfig python3 python3-pip python-is-python3 \
+      openjdk-17-jdk ccache rsync lzop bc kmod cpio libssl-dev \
+      ca-certificates procps file less nano \
+    && rm -rf /var/lib/apt/lists/*
+
+# `repo` from Google's mirror.
+RUN curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o /usr/local/bin/repo \
+    && chmod +x /usr/local/bin/repo
+
+# ---------------------------------------------------------------------------
+# Low-memory build tuning. Host gives this VM ~11 GB RAM + 16 GB swap; AOSP
+# nominally wants 32 GB+. These are the knobs that actually matter:
+#
+#   NINJA_HIGHMEM_NUM_JOBS  the big one. Soong tags linkers, R8/D8 and other
+#                           memory-hungry actions into a "highmem" pool. Without
+#                           a cap, several multi-GB linker jobs run at once and
+#                           OOM. 2 keeps peak RSS survivable.
+#   _JAVA_OPTIONS           caps every JVM the build spawns (javac, turbine,
+#                           d8, r8, metalava). Otherwise each sizes its heap
+#                           from total RAM and they collectively overcommit.
+#   ccache                  costs disk, not RAM, and makes the inevitable
+#                           repeat builds far cheaper.
+# ---------------------------------------------------------------------------
+ENV NINJA_HIGHMEM_NUM_JOBS=2 \
+    _JAVA_OPTIONS="-Xmx4g" \
+    USE_CCACHE=1 \
+    CCACHE_DIR=/aosp/.ccache \
+    CCACHE_EXEC=/usr/bin/ccache \
+    LC_ALL=C.UTF-8 \
+    LANG=C.UTF-8
+
+RUN git config --global user.email "builder@localhost" \
+    && git config --global user.name "Stefan Pavikjevikj" \
+    && git config --global color.ui false
+
+WORKDIR /aosp
+CMD ["/bin/bash"]

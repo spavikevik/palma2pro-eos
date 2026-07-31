@@ -1,0 +1,97 @@
+# /e/OS on Boox Palma 2 Pro
+
+Porting /e/OS to the Onyx Boox Palma 2 Pro (OPC1410R) to get off the stock firmware
+and its telemetry to Chinese servers.
+
+## Device
+
+| | |
+|---|---|
+| Model | OPC1410R, Boox Palma 2 Pro |
+| SoC | Qualcomm Snapdragon 750G — SM7225, `lito`/`lagoon` family |
+| RAM / Storage | 8 GB / 128 GB (+ microSD) |
+| Display | 6.13" colour e-paper (Kaleido), Onyx EPD stack |
+| Stock OS | Android 15 **system** (qssi) over an Android 11 **vendor** BSP |
+| VNDK | 30 — vendor frozen at API 30 |
+| Partitions | A/B (active slot **`_b`**), dynamic partitions (`super` = sda8), Treble-compliant |
+
+The SoC is the single most useful fact in this project: **SM7225 is also the Fairphone 4
+SoC**. Fairphone is GPL-compliant and publishes full kernel sources
+(`FairphoneMirrors/android_kernel_fairphone_sm7225`, msm-4.19), and SM7225 has upstream
+mainline support. Onyx publishes nothing. Every workaround below leans on FP4 in some way.
+
+## Strategy
+
+GSI first, device tree later. Recon is done — see `docs/findings.md`, which drives
+everything below.
+
+1. **Zero-risk analysis first.** EDL *reads* work on a locked bootloader, so `super` gets
+   dumped and dissected before any bootloader work. This produces the refresh-shim spec
+   and the go/no-go, at no risk to the device. (`scripts/dump-and-analyze-super.sh`)
+2. **`/e/OS` GSI on stock vendor.** Replaces `system` only, keeping Onyx's vendor blobs and
+   kernel — including the EPD driver. Target is the **Android 13** GSI, not 15: vendor is
+   VNDK 30 and Android 15 deprecated VNDK.
+3. **E-ink refresh controller.** The real deliverable. See below.
+4. **Proper device tree port.** Only if 2 works and 3 is tractable.
+
+## The actual hard problem
+
+The bootloader is an annoyance. The e-ink stack is the project.
+
+Onyx's refresh control — Regal/speed/smooth modes, per-app profiles, ghosting clears — is
+driven from `/system`, which a GSI replaces. On a stock GSI the panel lights up but drives
+itself like an LCD: continuous refresh, heavy ghosting, wrecked battery. So the deliverable
+that decides whether this is a daily driver is a **replacement refresh controller**.
+
+**Recon resolved the difficulty question favourably.** The EPD controller is exposed by
+the *kernel*, not hidden behind a proprietary HAL:
+
+```
+/sys/devices/platform/onyx_epdc_fb.0     EPDC framebuffer driver
+/sys/class/sepdc                          EPD controller class
+/sys/bus/platform/drivers/onyx_epdc_mfd
+/sys/module/onyxdsi
+```
+
+and `lshal` lists **zero** `vendor.onyx.*` services — every display HAL is stock Qualcomm.
+The chain is Onyx Java → `libonyx_epd_listener.so` (JNI) → ioctl/sysfs on `onyx_epdc_fb`.
+An `epdc_fb` driver is the classic i.MX-style E-ink API, so the transport is ours to drive.
+
+Remaining unknown: whether Onyx also patched `SurfaceFlinger`/`services.jar` in place under
+stock filenames. That changes how much *policy* we reimplement, not whether we can. Step 1
+answers it.
+
+## Why not Linux
+
+Asked and answered — see `docs/why-not-linux.md`. Short version: Ubuntu Touch needs Halium
+needs a rebuildable kernel, and Onyx has never shipped kernel source (6+ years of GPL2
+violation). postmarketOS on mainline would boot the SoC and show nothing, because no EPD
+driver or waveform data exists outside Onyx's blobs. Every path that keeps the screen
+usable keeps the Onyx kernel.
+
+## Layout
+
+```
+scripts/    device-side and host-side tooling
+docs/       procedures, findings, decisions
+backup/     EDL partition dumps      (gitignored — device-specific, contains IMEI/keys)
+firmware/   extracted stock images   (gitignored — proprietary Onyx blobs)
+out/        built images             (gitignored)
+```
+
+## Licensing
+
+Onyx ships no kernel source, so anything we build reuses their proprietary vendor blobs
+and a prebuilt kernel pulled from stock `boot.img`. Fine for a device you own. **Not
+redistributable.** If this is ever published it has to be scripts and patches that build
+against the user's own firmware dump — never a flashable image containing Onyx blobs.
+
+Fairphone ABL and kernel sources are GPL-2.0 and separately licensed; using FP4's ABL to
+unlock your own hardware is fine, redistributing a Boox image containing it is not.
+
+## Risk
+
+The Fairphone-4-ABL swap is the step that bricks devices. Onyx sells no unbrick service
+and there is no public Palma 2 Pro firehose recovery package. EDL with a working loader is
+the entire safety net, so it gets verified — dump *and* restore — before ABL is touched.
+See `docs/02-unlock.md`.

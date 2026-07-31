@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  E-ink oriented defaults. The panel is 824x1648 and every animation costs a
+  visible refresh, so animations are disabled rather than merely shortened.
+-->
+<resources>
+    <!-- No wallpaper: a static image forces full-screen refreshes. -->
+    <bool name="config_enableWallpaperService">false</bool>
+
+    <!-- E-ink cannot usefully animate; leaving these on causes constant
+         partial refreshes and heavy ghosting. -->
+    <bool name="config_disableTransitionAnimation">true</bool>
+
+    <!-- No auto-brightness: this panel's frontlight is warm/cold LEDs driven
+         through /sys/class/backlight/onyx_bl_{br,ct}, not a standard sensor
+         backed backlight. -->
+    <bool name="config_automatic_brightness_available">false</bool>
+</resources>
