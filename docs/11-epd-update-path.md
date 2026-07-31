@@ -71,7 +71,73 @@ valid `vaddr`; what it does not have is update parameters. That matches the
 `EPDC_UPDATE_PARMS_ADDR` / `EPDC_UPDATE_CNT` plane properties documented in
 `docs/03-ebc-api.md` -- Onyx's SF supplies them, ours does not.
 
-## CORRECTION: /dev/ebc is init-time config only
+## CORRECTION #2 (supersedes the one below): SET_EBC_SEND_UPDATE *is* the path
+
+With Onyx's SurfaceFlinger running under a fully booted /e/OS (onyx-sf branch),
+the kernel logs their SF driving the panel directly:
+
+```
+SWEpdcManager: ### FW, mode -1
+epdc_ioctl(): -- SET_EBC_CLEAR_ALL_UPDATE !
+epdc_ioctl(): set force_waveform = -1!
+epdc_ioctl(): SET_EBC_SEND_UPDATE -- magic[1] [x=0 y=0 w=1648 h=824]! flags = 0x31000!
+epdc_ioctl(): SET_EBC_SEND_UPDATE -- magic[2] [x=0 y=0 w=1648 h=824]! flags = 0x21000!
+SurfaceFlinger: refresh screen (0, 0 - 1648, 824) waveform_mode 2 flags 0x31000 marker 1
+```
+
+and the vendor composer doing the same on its own path:
+
+```
+SDM: update_to_display[1/0] -- marker[1] waveform_mode = 12, update_mode = 1,
+     Rect[0 0 1648 824], flags = 1000
+```
+
+The earlier conclusion that `/dev/ebc` carries no per-frame traffic was an
+artefact of tracing their SF with **no clients attached** -- it had nothing to
+composite, so it sent nothing. With a real framework above it, SF submits
+`SET_EBC_SEND_UPDATE` itself.
+
+Note the parameters match what `ebctool`'s dry run predicted long ago:
+full-screen rect, `waveform_mode 2` (the vendor's ordinary composition mode from
+docs/03), `flags 0x21000`.
+
+### The panel WORKS -- proven
+
+Those two updates fire at `Setting power mode 0`, i.e. the standard e-ink
+clear-on-screen-off. The panel accepted them. So the whole hardware chain --
+waveform, TCON, PMIC, EPD pipeline -- is functional under our build. There is no
+hardware or driver problem left to solve.
+
+### What is actually missing
+
+Only **two** `SET_EBC_SEND_UPDATE` calls happen in an entire session, both from
+the power-off clear. Input, launcher activity and `powerMode=On` produce none.
+SF refreshes on content change, and it is never told content changed, because
+EPD update regions originate ABOVE SurfaceFlinger: apps call
+`Surface::transferEpdc`, the regions ride to SF inside `BufferData`, and SF
+forwards them. Our /e/OS framework never calls it -- our libgui has no `epdc`
+symbols at all.
+
+So the display is dark not because the EPD is broken, but because nothing is
+asking for a refresh.
+
+### Two ways forward
+
+1. **A forced-refresh daemon.** `SET_EBC_SEND_UPDATE` is proven working with
+   known-good parameters, and unlike `GET_EBC_BUFFER` it does not hang. A small
+   service issuing periodic full-screen updates would make the panel usable
+   immediately. Needs the ioctl NUMBER, which is best obtained by tracing their
+   SF now that it actively sends (docs/03's `0x700c` is unconfirmed and the
+   numbering is +1-shifted above 0x7001).
+2. **Implement `transferEpdc` properly** in our libgui plus a caller in the
+   framework draw path. Correct, incremental, redistributable -- and the design
+   is fully recovered already (`hwc_epdc_llist`, the flatten format, the 22-rect
+   cap, `mergeByMode`).
+
+(1) gets a working screen fastest; (2) is the real fix and the thing `main`
+ultimately needs.
+
+## SUPERSEDED: /dev/ebc is init-time config only
 
 An earlier revision of this document concluded that driving `/dev/ebc` from our
 SF was the promising route. **A second trace disproved that.** With Onyx's SF
