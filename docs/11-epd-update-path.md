@@ -71,6 +71,85 @@ valid `vaddr`; what it does not have is update parameters. That matches the
 `EPDC_UPDATE_PARMS_ADDR` / `EPDC_UPDATE_CNT` plane properties documented in
 `docs/03-ebc-api.md` -- Onyx's SF supplies them, ours does not.
 
+## PROVEN BY ELIMINATION: update parameters are REQUIRED, not a hint
+
+Both halves were run on hardware, separately, and neither works alone.
+
+| | Onyx's SurfaceFlinger | our SurfaceFlinger |
+|---|---|---|
+| composites? | **no** -- `layerHistory active=0`, zero EPDC plane commits, `screencap` returns 0 bytes | **yes** -- `active=1`, commits flowing |
+| supplies EPD update params? | yes, it has `EpdcManager` / `EpdcWrapper` / `transferEpdc` | **no** -- our libgui has no `epdc` symbols at all |
+| result on the panel | blank | blank |
+
+With our SF running, **every single** plane commit is rejected:
+
+```
+__sde_plane_atomic_update_epdc(): error! FB[187] vaddr[...] width[53] height[824] stride[64] fb_width[64]
+```
+
+not one succeeds. So no composited pixel ever reaches the buffer the EPD scans
+out, and `ebcrefresh` faithfully redraws an empty buffer -- which is exactly what
+is seen: the panel flashes black then settles grey, with no content.
+
+**CORRECTION -- that inference was wrong.** Disassembling the kernel's own reject
+path settles what the precondition actually is. `__sde_plane_atomic_update_epdc`
+begins:
+
+```
+ldp  w21, w20, [x22, #0x28]    ; plane width, height
+cbz  x23, <error>              ; vaddr must be non-NULL
+ldr  w8, [x27, #0x1360]
+cmp  w21, w8
+b.ne <error>                   ; width must EQUAL a global
+ldr  w8, [x27, #0x1364]
+cmp  w20, w8
+b.ne <error>                   ; height must EQUAL a global
+```
+
+The globals are the panel dimensions, and the observed failures fit exactly:
+
+* `width[53] height[824]` -- height matches 824, width 53 != 1648 -> rejected
+* `width[1648] height[823]` -- width matches, height 823 != 824 -> rejected
+
+So the commit is refused for **plane geometry**, not for missing update
+parameters. Nothing in this function reads `EPDC_UPDATE_PARMS_ADDR`. Whether
+those properties are needed *later* in the pipeline is untested and now
+unsupported by any evidence we have.
+
+### What is actually happening under our SF
+
+Only one plane is ever committed, over and over, with a constant and strange
+geometry: `width[53] height[824] stride[64] fb_width[64]` -- a 64-pixel-wide
+buffer, full panel height, two alternating `drm_plane_state` pointers. That is
+not the UI. Our SurfaceFlinger is compositing (`layerHistory active=1`) but is
+never handing the display a full-panel plane.
+
+Forcing GPU/client composition (`service call SurfaceFlinger 1008 i32 1`, which
+succeeds as root) does not change it -- the same 53x824 plane keeps failing.
+
+**The open question is therefore what that 53x824 plane is and why no
+full-screen plane is committed**, not how to supply update parameters. Worth
+checking next: the display mode SF selected versus the panel's native mode, and
+whether `dsi_display0=qcom,mdss_dsi_rm69299_visionox_amoled_cmd` in the kernel
+cmdline (an AMOLED panel name, on an e-ink device) means the wrong panel
+configuration is active.
+
+Onyx's SF has the parameter machinery but sits idle because the regions
+originate ABOVE it (`Surface::transferEpdc`), and our framework never calls it.
+Ours composites but supplies nothing. The missing piece is identical in both
+cases: `EpdcWrapper` regions flowing from the app/framework layer into
+SurfaceFlinger.
+
+That makes option 2 below the only route, and it is all our own code.
+
+### Already de-risked on hardware
+
+* `hwc_epdc_llist` -- LTRB + mode, 20 bytes, confirmed from producer AND consumer
+* the flatten wire format -- `[batch][word_count][words]`
+* the 22-rect cap, and why `mergeByMode` exists
+* `SET_EBC_SEND_UPDATE = 0x700c`, and `ebcrefresh` visibly driving the panel
+* root, `adb remount` overlayfs hot-swap, and `edl-delta-flash.py`
+
 ## CORRECTION #2 (supersedes the one below): SET_EBC_SEND_UPDATE *is* the path
 
 With Onyx's SurfaceFlinger running under a fully booted /e/OS (onyx-sf branch),
