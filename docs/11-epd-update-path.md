@@ -897,3 +897,90 @@ E SurfaceFlinger: ERROR(Unknown error 2147483640, -2147483640).
 ```
 
 Ours composites; theirs does not. Ours is the one to fix.
+
+---
+
+# RESOLVED: the panel works
+
+`src/epdcshim.c`, LD_PRELOAD'd into the composer, supplies the missing update
+rectangles. **The display works.** Setup wizard completed on-device, launcher
+renders, UI is usable.
+
+## What it does
+
+Interposes `drmModeAtomicAddProperty` / `drmModeAtomicCommit`. This is possible
+because `libsdedrm.so` -- which owns `DRMPlane::SetEpdcUpdParmsAddr` /
+`SetEpdcUpdCnt` -- has `libdrm.so` as a NEEDED entry, so those calls resolve
+through the global symbol table where a preloaded definition wins.
+
+`AddProperty` is hooked *only to record* which object ids the composer itself
+put in the request; at commit time we add the two epdc properties to exactly
+those objects. Adding a property for an object that is not otherwise in the
+request would pull it in and can fail an otherwise valid commit, so we never
+guess a plane id. Objects that are not planes, or planes without the epdc
+properties, are cached as negative and skipped forever after.
+
+Confirmed at runtime:
+
+```
+epdcshim: plane 86: EPDC_UPDATE_PARMS_ADDR=78 EPDC_UPDATE_CNT=79
+epdcshim: plane 96: EPDC_UPDATE_PARMS_ADDR=78 EPDC_UPDATE_CNT=79
+```
+
+and the kernel's wakeup sources gained `epdc_update` / `epdc_power`, with plane
+commits going from 155 to 1228 per session.
+
+## Tunables (live, re-read every 30 commits -- no restart)
+
+```sh
+setprop persist.epdcshim.enable   1      # master switch
+setprop persist.epdcshim.wf       2      # waveform_mode, 0..7 (mode_num=8)
+setprop persist.epdcshim.upd      0      # update_mode
+setprop persist.epdcshim.flag     0x21000
+setprop persist.epdcshim.interval 0      # ms floor between refreshes
+```
+
+**`upd 1` flashes the whole panel on every change; `upd 0` does not.** That one
+value is the difference between unusable and pleasant. `wf 2` is GC16, the
+full-flash mode Onyx itself uses for whole-screen refreshes.
+
+`DRM_MODE_ATOMIC_TEST_ONLY` commits are skipped -- injecting there would drive
+the panel for every validation pass the composer makes.
+
+## Install / revert
+
+```sh
+adb push out/libepdcshim.so /vendor/lib64/libepdcshim.so
+# add to /vendor/etc/init/vendor.qti.hardware.display.composer-service.rc:
+#     setenv LD_PRELOAD /vendor/lib64/libepdcshim.so
+```
+
+Revert = delete that one line and reboot. Pristine rc is in the repo history;
+nothing else in vendor is modified.
+
+## Correction: ebcfb was reading the wrong buffer
+
+The earlier "EPD buffer is 100% 0xff" measurement is **not** evidence of what it
+claimed. Boot logs show `epdc_mmap(): [virt_buf_handwrite] ... size: 0x52f000`,
+so `mmap(fd, 0)` lands on the *handwriting overlay* buffer, which is legitimately
+blank. The conclusion it was used to support happened to be right, but it was
+supported by the disassembly, not by that measurement. `ebcfb` needs an offset
+argument before its output means anything.
+
+## Remaining, in the order agreed
+
+1. **Stock composer** -- if the shim ever proves too fragile, try the composer
+   from the stock image instead of patching around ours.
+2. **Option B, kernel patch** -- make `__sde_plane_atomic_update_epdc`
+   substitute a full-panel rectangle when `cnt == 0`. Works for any userspace
+   including a plain GSI, needs a trampoline (no spare instruction space at the
+   patch site), and a mistake means no boot (EDL recovery).
+3. **Option C, do it properly in SF** -- real damage regions plumbed to the
+   composer, giving partial updates and per-region waveform modes instead of a
+   full-screen refresh every commit. The correct end state. Blocked on reverse
+   engineering the SF->composer transport: `hwc_epdc_llist` appears in no vendor
+   library, only in Onyx's `libgui.so` and their SF.
+
+Cosmetic, noticed once the panel came up: the launcher renders shifted left with
+black at the right edge, and dark theme is the default (bad on e-ink -- `cmd
+uimode night no`).
