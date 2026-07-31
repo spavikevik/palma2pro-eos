@@ -103,10 +103,37 @@ shared prefix keeps identical codes and only our newer additions occupy codes
 beyond theirs. Calls into those extras then fail cleanly with an unknown
 transaction rather than silently invoking the wrong method.
 
-`getMaxLayerPictureProfiles` is confirmed as one insertion point. There are 5
-extra methods in total (75 - 70), so **up to five** insertion points may exist;
-only the first is confirmed. Re-run the diff after each move until every shared
-code matches by name.
+### RESULT: exactly one method needs moving
+
+Walking both maps in code order and accounting for our extras:
+
+```
+OURS 75 codes   ONYX 70 codes   (extra = 5)
+
+insertion points (ours-only, mid-interface): 1
+    code 25: getMaxLayerPictureProfiles
+
+remaining mismatches after that insertion: 0
+```
+
+Of the five methods we have and they do not, **four are appended past the end of
+their interface** -- harmless, since their SF is never asked for those codes --
+and exactly **one**, `getMaxLayerPictureProfiles`, sits at code 25 and shifts the
+45 methods after it by +1.
+
+So the entire wire incompatibility is one misplaced declaration. Moving
+`getMaxLayerPictureProfiles` to the end of
+
+    frameworks/native/libs/gui/aidl/android/gui/ISurfaceComposer.aidl
+
+makes all 70 shared codes line up exactly. Re-run the diff afterwards to confirm
+it reports 0 insertion points.
+
+Method to reproduce the measurement: for each `_ZN7android3gui17BpSurfaceComposer*`
+FUNC symbol, disassemble its body and take the last `mov w1, #imm` with
+`0 < imm < 300` -- that is the transaction code handed to `transact()`. Filter on
+the `17` mangled length prefix; `BpSurfaceComposerClient` (`23`) is a different
+interface and pollutes the map otherwise.
 
 Caveat: aligning codes fixes *dispatch*. It does not guarantee *payload*
 compatibility -- if a shared method's parameter or return struct changed shape
