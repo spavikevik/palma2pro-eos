@@ -66,6 +66,53 @@ framework's hot path. The first two or three iterations will show whether the
 tail is short. If `system_server` gets through `DisplayManagerService` and into
 `WindowManagerService` without new failures, it is probably short.
 
+## MEASURED: the interfaces are 5 methods apart, and the shift is +1 from code 25
+
+`ISurfaceComposer` is `_ZN7android3gui17BpSurfaceComposer...` (note
+`BpSurfaceComposerClient` is a *different* interface -- filter on the `17` length
+prefix or its entries pollute the map):
+
+```
+OURS: 75 methods      ONYX: 70 methods
+```
+
+Each `Bp` method loads its transaction code as an immediate into `w1` before
+`transact()`, so the code -> method map is recoverable by disassembly. Diffing
+the two maps shows the interfaces are identical up to code 24, then ours gains
+one method and everything after shifts by exactly +1:
+
+```
+code 25   ours=getMaxLayerPictureProfiles     onyx=captureDisplay
+code 26   ours=captureDisplay                 onyx=captureDisplayById
+code 27   ours=captureDisplayById             onyx=captureLayersSync
+code 28   ours=captureLayersSync              onyx=captureLayers
+code 29   ours=captureLayers                  onyx=clearAnimationFrameStats
+code 33   ours=onPullAtom                     onyx=getCompositionPreference
+code 34   ours=getCompositionPreference       onyx=getDisplayedContentSamplingAttributes
+```
+
+So when our framework calls e.g. `getCompositionPreference` (code 34), their SF
+executes `getDisplayedContentSamplingAttributes` instead. That is exactly the
+class of failure behind
+`SurfaceControl.getCompositionColorSpaces()` returning null and killing
+`system_server` -- the wrong method runs and the reply does not parse.
+
+**The fix is to move our extra methods to the END of
+`frameworks/native/libs/gui/aidl/android/gui/ISurfaceComposer.aidl`**, so the
+shared prefix keeps identical codes and only our newer additions occupy codes
+beyond theirs. Calls into those extras then fail cleanly with an unknown
+transaction rather than silently invoking the wrong method.
+
+`getMaxLayerPictureProfiles` is confirmed as one insertion point. There are 5
+extra methods in total (75 - 70), so **up to five** insertion points may exist;
+only the first is confirmed. Re-run the diff after each move until every shared
+code matches by name.
+
+Caveat: aligning codes fixes *dispatch*. It does not guarantee *payload*
+compatibility -- if a shared method's parameter or return struct changed shape
+between the two AOSP revisions, that method still misbehaves. Expect to check
+the ones the framework calls early during boot.
+
 ## Build integration
 
 * prebuilt `surfaceflinger` binary + the 130-lib closure minus the binder libs,
