@@ -682,3 +682,155 @@ adb pull /data/local/tmp/ebc_trace.log
 Onyx's SF also needs `vendor.display.use_smooth_motion=0` and
 `debug.sf.prime_shader_cache.*=0`, or it SIGSEGVs in `qtiCreateSmomoInstance`
 and in Skia's shadow-layer priming respectively.
+
+---
+
+# 2026-07-31: the actual gate, found by disassembly
+
+Two conclusions recorded earlier in this file and in the session are **wrong**.
+They are corrected here rather than deleted, because the reasoning that produced
+them was the expensive part.
+
+## Correction 1: the Fairphone 4 ABL was never breaking the display
+
+The runtime `/proc/cmdline` contains
+
+```
+msm_drm.dsi_display0=qcom,mdss_dsi_rm69299_visionox_amoled_cmd:
+```
+
+injected by the FP4 ABL we flashed to unlock the bootloader, and Onyx's DTBO
+does contain an `rm69299 ... visionox dummy panel` node. That looked damning.
+It is a coincidence.
+
+`dsi_display0` selects the panel for the display node whose `label` is
+`"primary"`, and in Onyx's DTBO that is `qcom,dsi-display-dummy`, whose
+`qcom,dsi-default-panel` is *already* `&dsi_rm69299_visionox_amoled_cmd`. The
+FP4 value therefore selects the panel that node would have used anyway. The
+real e-ink panel hangs off `qcom,dsi-display-secondary` (label `"secondary"`),
+which is untouched by `dsi_display0`. The kernel confirms it:
+
+```
+dsi_display_dev_probe(): boot_disp[qcom,mdss_dsi_epdc_cmd] for dsi display index[1]
+dsi_display_dev_probe(): boot_disp[qcom,mdss_dsi_rm69299_visionox_amoled_cmd] for dsi display index[0]
+[drm:dsi_display_bind] Successfully bind display panel 'qcom,mdss_dsi_epdc_cmd'
+sde_encoder_get_hw_resources(): epdc panle is SECONDARY dsi, so force set
+    hw_res.display_type SDE_CONNECTOR_PRIMARY for sde rm req.
+```
+
+Onyx patched SDE to force the secondary DSI to be treated as the primary
+connector. The binding was correct the entire time. `scripts/patch-boot-cmdline.py`
+and `out/images/boot-extra.img` were built to fix a non-problem; the cmdline
+override is harmless but pointless, and `boot_b.img` can be restored.
+
+Also wrong in passing: the connector mapping. `card0-DSI-1` at 1648x824 is the
+**dummy**'s configured timing; the epdc panel node's own DSI timing is 457x835
+(0x1c9 x 0x343), because the DSI link feeds a Lattice FPGA TCON that drives the
+1648x824 EPD, so the link timing need not match the visible panel.
+
+## Correction 2: the commit path was never "missing"
+
+Zero `commit[%d] upd_data_cnt[...]` lines appear in a whole boot, which read as
+"the commit never runs". Disassembly says otherwise -- that log is gated:
+
+```
+e4e7d4:  add   w2, w9, #1
+e4e7d8:  str   w2, [x8, #0xff4]        ; commit counter++   (UNCONDITIONAL)
+e4e7dc:  tbnz  w10, #4, 0xe4e9ec       ; only LOGS if debug bit 4 set
+e4e7f8:  bl    0x81f60                 ; the submit itself  (UNCONDITIONAL)
+```
+
+`w10` is `mdp_buffer_debug_level` (resolved via `/proc/kallsyms` after
+`kptr_restrict=0`; `_text` is file offset 0, so file offset + `_text` = VA).
+The same byte gates the per-plane success log at `0xe4e944`. There is no
+debugfs (`CONFIG_DEBUG_FS` is off) and no module param for it, so those logs
+are unreachable without a kernel memory write. **Absence of those lines carries
+no information.**
+
+## What actually gates the panel
+
+`__sde_plane_atomic_update_epdc` (file `0xe4e6d8` = `sde_plane_atomic_update`)
+rejects any plane that is not exactly panel-sized:
+
+```
+e4e770:  ldp   w21, w20, [x22, #0x28]  ; fb width, height
+e4e788:  ldr   w8, [x27, #0x1360]      ; panel width
+e4e78c:  cmp   w21, w8
+e4e790:  b.ne  <error>
+e4e794:  ldr   w8, [x27, #0x1364]      ; panel height
+e4e798:  cmp   w20, w8
+e4e79c:  b.ne  <error>
+```
+
+`stride` and `fb_width` are logged but never compared, so the 1664-vs-1648
+gralloc padding is irrelevant. Every rejection we ever logged was a partial
+plane -- `height[785..823]` (animation frames) or `width[53]` (the nav bar).
+Under client composition the whole screen collapses to one full-panel plane and
+the check passes.
+
+Past the check, the submit is:
+
+```
+e4e7e0:  ldr   w5, [x25, #0x91c]       ; upd_data_cnt
+e4e7e4:  add   x4, x25, #0x7dc         ; upd_data[] -- the update rectangles
+e4e7f8:  bl    0x81f60                 ; submit(vaddr, w, h, stride, upd_data, cnt)
+```
+
+where `x25 = [plane + 0x4d8]`. **With `cnt == 0` there are no regions to
+refresh, so the panel is driven with nothing.** That is the blank screen.
+
+## Where the rectangles come from
+
+Onyx added two DRM **plane properties**:
+
+```
+0x2f6684b  EPDC_UPDATE_CNT
+0x2f6685b  EPDC_UPDATE_PARMS_ADDR
+0x2f66e9b  drm_epdc_update
+```
+
+handled by `_sde_plane_set_epdc_upd` / `_sde_plane_set_epdc_upd_cnt`:
+
+```
+'%s(): user space  epdc_update_parms_addr[0x%llx]'
+'%s(): failed to copy epdc_update_parms_addr [0x%...'
+'%s(): prop upd_data_cnt[%d][0] [%d %d %d %d] waveform_mode[%d]
+       update_mode[%d] update_marker[%d] ...'
+'%s(): upd_data_cnt[%lld]!'
+```
+
+`EPDC_UPDATE_PARMS_ADDR` is a **userspace pointer**, `copy_from_user`'d by the
+kernel, to an array of update-parameter structs; `EPDC_UPDATE_CNT` is how many.
+Both are set per atomic commit by whoever owns DRM master -- SurfaceFlinger.
+
+So the chain is: app damage -> `Surface::transferEpdc` -> `BufferData` -> SF ->
+these two plane properties -> `upd_data[]`/`cnt` -> submit. Our framework has no
+`epdc` symbols anywhere in libgui, so the chain is cut at the first link and
+`cnt` is structurally always 0.
+
+## What this means for the port
+
+The EPD hardware, waveform stack and driver are fully functional under our
+build. Confirmed this session:
+
+* the UI composites correctly -- `screencap` returns a normal /e/OS Settings
+  screen at 824x1648 (the earlier all-black capture was taken with the display
+  **asleep**; `dumpsys display` showed `Display State=OFF`, `mWakefulness=Asleep`)
+* full-panel planes pass the size check and reach the submit
+* `SET_EBC_SEND_UPDATE` from `ebcrefresh` is accepted (`rc=0`) and drives the
+  real waveform pipeline -- each call produces `o_g_w(): vmalloc wf_lut[n]`
+  followed by `waveform_clean_work_handler()`
+* the waveform loaded at boot: `320_R118_AFE001_ES133TT3P1_TC`
+
+The only missing piece is the update-rectangle plumbing. Implementing it means
+setting `EPDC_UPDATE_PARMS_ADDR` + `EPDC_UPDATE_CNT` on the plane in the DRM
+atomic commit -- which for a full-screen refresh needs exactly one rectangle
+covering the panel, not the full app-damage plumbing. That is a far smaller job
+than reproducing Onyx's SF, and it belongs in the composer/DRM backend rather
+than in libgui.
+
+Still unknown: the layout of the update-parameter struct that
+`EPDC_UPDATE_PARMS_ADDR` points at. The printk shows the field order
+(`[x y w h] waveform_mode, update_mode, update_marker, flag, temp`), which
+matches the 40-byte `ebc_send_update` struct `ebcrefresh` already uses
+successfully -- likely the same struct.
