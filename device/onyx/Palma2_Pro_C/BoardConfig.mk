@@ -174,17 +174,37 @@ BOARD_SYSTEM_EXTIMAGE_FILE_SYSTEM_TYPE := ext4
 BOARD_VENDORIMAGE_FILE_SYSTEM_TYPE := ext4
 BOARD_ODMIMAGE_FILE_SYSTEM_TYPE := ext4
 
-# Actually BUILD odm. The rest of the odm config above has been present all
-# along, but without this no odm.img is produced -- which is why the device kept
-# running Onyx's stock odm.
+# DISABLED -- building odm breaks the boot. See below before re-enabling.
 #
-# We build it for exactly one reason: /odm/etc/fstab.default overrides
-# /vendor/etc/fstab.default, and vold reads the vendor copy when mounting /data.
-# Onyx's has `dirsync`, which this A15 fs_mgr passes through to f2fs, which
-# rejects it -- so /data never mounts. No /system path precedes /vendor in
-# fs_mgr's search order, so odm is the only clean override point on a port that
-# does not rebuild vendor. Onyx's odm payload is preserved; see odm.mk.
-BOARD_USES_ODMIMAGE := true
+# The intent was sound: /odm/etc/fstab.default overrides /vendor/etc/fstab.default,
+# and vold reads the vendor copy when mounting /data. Onyx's has `dirsync`, which
+# this A15 fs_mgr passes through to f2fs, which rejects it. No /system path
+# precedes /vendor in fs_mgr's search order, so odm is the only clean override
+# point on a port that does not rebuild vendor.
+#
+# But flashing our odm.img (995,328 B, with Onyx's payload preserved -- 42
+# vendor.audio.feature.* props, the vintf manifest, media_profiles) left the
+# device unable to boot: no adb, and `rawdump` still held the PREVIOUS boot's
+# kernel log, meaning init never got as far as starting system services. Earlier
+# than any other failure this port has hit, and earlier than our on-device
+# logger can capture.
+#
+# Restoring the stock odm_b (firmware/stock-extract/odm_b-stock.img) with the
+# same new system.img boots fine, so odm is conclusively the cause.
+#
+# Untested suspicions, in order:
+#   * our build generates fresh odm_file_contexts / odm_service_contexts rather
+#     than carrying Onyx's precompiled_sepolicy; the log shows ours ARE loaded,
+#     and a mislabel here would bite vendor init immediately;
+#   * shipping /odm/etc/fstab.default makes fs_mgr use OUR fstab for every
+#     first-stage mount (system, vendor, product, odm), not just /data;
+#   * ro.odm.build.* is regenerated, so any vendor code comparing odm and vendor
+#     fingerprints now sees a mismatch.
+#
+# Diagnosing it needs boot logging earlier than we currently have. Until then the
+# `dirsync` fix stays as the documented device-local vendor patch
+# (docs/09-vendor-fstab-patch.md), which works.
+# BOARD_USES_ODMIMAGE := true
 
 # /data is f2fs on this device (see rootdir/etc/fstab.emmc).
 TARGET_USERIMAGES_USE_F2FS := true
