@@ -189,9 +189,16 @@ can introduce, and they are invisible in logs.
 
 ## 8. Build and deploy loop
 
+Full workflow, traps included: **`docs/16-build-flash-test.md`**. Read section 1
+of it before your first build -- two of the traps there cost hours each.
+
+The short version:
+
 ```sh
 scripts/builder.sh build surfaceflinger      # ~50 s once the tree is warm
-scripts/builder.sh logs                      # watch it
+scripts/builder.sh logs -f                   # watch it
+# wait for the real marker, not pgrep:
+scripts/builder.sh ssh 'grep -c "build completed successfully" /aosp/build.log'
 ```
 
 Then pull the binary and push it (the long base64 hop is because there is no
