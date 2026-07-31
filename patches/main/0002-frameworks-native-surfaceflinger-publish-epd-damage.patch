@@ -1,5 +1,5 @@
 diff --git a/services/surfaceflinger/CompositionEngine/src/Output.cpp b/services/surfaceflinger/CompositionEngine/src/Output.cpp
-index eac7fbd1d6..ab009ac0a9 100644
+index eac7fbd1d6..891c53041f 100644
 --- a/services/surfaceflinger/CompositionEngine/src/Output.cpp
 +++ b/services/surfaceflinger/CompositionEngine/src/Output.cpp
 @@ -27,6 +27,13 @@
@@ -16,7 +16,7 @@ index eac7fbd1d6..ab009ac0a9 100644
  #include <compositionengine/impl/OutputCompositionState.h>
  #include <compositionengine/impl/OutputLayer.h>
  #include <compositionengine/impl/OutputLayerCompositionState.h>
-@@ -1262,6 +1269,106 @@ void Output::devOptRepaintFlash(const compositionengine::CompositionRefreshArgs&
+@@ -1262,6 +1269,130 @@ void Output::devOptRepaintFlash(const compositionengine::CompositionRefreshArgs&
      prepareFrame();
  }
  
@@ -67,6 +67,30 @@ index eac7fbd1d6..ab009ac0a9 100644
 +        return s;
 +    }();
 +    return sMap;
++}
++
++
++// ===========================================================================
++// TASK (see docs/15-task-per-layer-damage.md in the palma2pro-eos repo)
++//
++// Return the region the e-ink panel should refresh, in OUTPUT space.
++//
++// The implementation below is CORRECT but COARSE: Output::getDirtyRegion() is
++// the union of everything that changed across all layers, so a single sweeping
++// clock hand or a blinking cursor comes back as a rectangle covering the whole
++// panel -- and the panel then repaints all 1.36M pixels for 30x50 of actual
++// change.
++//
++// Replace it with something finer. Everything downstream of this function --
++// the shared mapping, the shim, the kernel's 8-rectangle array -- already works
++// and does not need to change.
++//
++// Measured on device with the baseline:
++//     epdc: raw rects=1 bounds=[0 0 1648 824]
++// ===========================================================================
++Region collectEpdcDamage(const Output& output) {
++    const auto& outputState = output.getState();
++    return outputState.transform.transform(output.getDirtyRegion());
 +}
 +
 +void publishEpdcDamage(const Region& damage, bool forceFull) {
@@ -123,7 +147,7 @@ index eac7fbd1d6..ab009ac0a9 100644
  void Output::finishFrame(GpuCompositionResult&& result) {
      SFTRACE_CALL();
      ALOGV(__FUNCTION__);
-@@ -1270,6 +1377,19 @@ void Output::finishFrame(GpuCompositionResult&& result) {
+@@ -1270,6 +1401,18 @@ void Output::finishFrame(GpuCompositionResult&& result) {
          return;
      }
  
@@ -136,8 +160,7 @@ index eac7fbd1d6..ab009ac0a9 100644
 +    // installed rotated), so it must be transformed first. Publishing layer
 +    // stack coordinates would refresh a plausible-looking but wrong region.
 +    if (getDisplayId()) {
-+        publishEpdcDamage(outputState.transform.transform(getDirtyRegion()),
-+                          /*forceFull=*/false);
++        publishEpdcDamage(collectEpdcDamage(*this), /*forceFull=*/false);
 +    }
 +
      std::optional<base::unique_fd> optReadyFence;

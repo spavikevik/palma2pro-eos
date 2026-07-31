@@ -4,8 +4,16 @@
   visible refresh, so animations are disabled rather than merely shortened.
 -->
 <resources>
-    <!-- No wallpaper: a static image forces full-screen refreshes. -->
-    <bool name="config_enableWallpaperService">false</bool>
+    <!-- Wallpaper service ENABLED.
+         It was disabled here on the theory that "a static image forces
+         full-screen refreshes". That was wrong: a static wallpaper is drawn
+         once like any other layer and costs nothing extra to hold on screen --
+         only *live* wallpapers refresh continuously. Disabling the service
+         instead left SystemServer logging "Wallpaper service disabled by
+         config", no wallpaper settable at all, and a BLACK background, which is
+         the worst case on e-ink: maximum ink, poor contrast.
+         Pair this with a live wallpaper at your peril; a static one is free. -->
+    <bool name="config_enableWallpaperService">true</bool>
 
     <!-- E-ink cannot usefully animate; leaving these on causes constant
          partial refreshes and heavy ghosting. -->
