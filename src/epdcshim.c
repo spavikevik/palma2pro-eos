@@ -55,6 +55,13 @@ typedef signed   int   i32;
 typedef unsigned long  u64;
 typedef unsigned long  usize;
 
+/* Freestanding: no stdint.h. Provide the two types the shared contract needs,
+ * then pull in the contract itself so the layout cannot drift from the writer. */
+typedef unsigned int uint32_t;
+typedef signed   int int32_t;
+#define EPDC_DAMAGE_NO_STDINT 1
+#include "epdc_damage.h"
+
 #define RTLD_NEXT    ((void *)-1L)
 #define RTLD_DEFAULT ((void *)0)
 
@@ -139,6 +146,15 @@ static void (*p_free_prop)(propres_t *);
 static void (*p_log)(int, const char *, const char *, ...);
 static int  (*p_prop_get)(const char *, char *);
 static int  (*p_clock_gettime)(int, void *);
+static int  (*p_open)(const char *, int, ...);
+static void *(*p_mmap)(void *, usize, int, int, int, long);
+
+/* Damage published by SurfaceFlinger, if it is running a build that does so.
+ * Absent -> we fall back to one full-panel rectangle, i.e. previous behaviour,
+ * so an unpatched SF still gets a working display. */
+static const volatile struct epdc_damage_shm *g_dmg;
+static int g_dmg_tried;
+static u32 last_dmg_seq;
 
 #define LOGI(...) do { if (p_log) p_log(4, "epdcshim", __VA_ARGS__); } while (0)
 
@@ -179,6 +195,64 @@ static void resolve(void)
     p_log           = dlsym(RTLD_DEFAULT, "__android_log_print");
     p_prop_get      = dlsym(RTLD_DEFAULT, "__system_property_get");
     p_clock_gettime = dlsym(RTLD_DEFAULT, "clock_gettime");
+    p_open          = dlsym(RTLD_DEFAULT, "open");
+    p_mmap          = dlsym(RTLD_DEFAULT, "mmap");
+}
+
+/* Attach to SurfaceFlinger's damage mapping. Tried once; if SF is not
+ * publishing, the shim stays in full-screen mode forever after. */
+static void attach_damage(void)
+{
+    if (g_dmg_tried) return;
+    g_dmg_tried = 1;
+    if (!p_open || !p_mmap) return;
+
+    int dfd = p_open(EPDC_DAMAGE_PATH, 0 /* O_RDONLY */);
+    if (dfd < 0) return;
+    void *m = p_mmap(0, 4096, 1 /* PROT_READ */, 1 /* MAP_SHARED */, dfd, 0);
+    if (!m || m == (void *)-1L) return;
+
+    const volatile struct epdc_damage_shm *s = m;
+    if (s->magic != EPDC_DAMAGE_MAGIC || s->version != EPDC_DAMAGE_VERSION) {
+        LOGI("damage map present but magic/version mismatch (%u/%u)",
+             s->magic, s->version);
+        return;
+    }
+    g_dmg = s;
+    LOGI("attached to SurfaceFlinger damage at %s", EPDC_DAMAGE_PATH);
+}
+
+/* Seqlock read. Returns rectangle count, 0 if the region is unusable or
+ * unchanged; *changed says whether SF composited anything new. */
+static int read_damage(struct epdc_damage_rect *out, int *full, int *changed)
+{
+    *full = 0;
+    *changed = 1;
+    if (!g_dmg) return 0;
+
+    for (int attempt = 0; attempt < 4; attempt++) {
+        u32 s1 = __atomic_load_n(&g_dmg->seq, __ATOMIC_ACQUIRE);
+        if (s1 & 1u) continue;                  /* writer mid-update */
+
+        u32 n = g_dmg->count;
+        u32 f = g_dmg->full;
+        if (n > EPDC_DAMAGE_MAX) n = EPDC_DAMAGE_MAX;
+        for (u32 i = 0; i < n; i++) {
+            out[i].left   = g_dmg->rect[i].left;
+            out[i].top    = g_dmg->rect[i].top;
+            out[i].right  = g_dmg->rect[i].right;
+            out[i].bottom = g_dmg->rect[i].bottom;
+        }
+
+        u32 s2 = __atomic_load_n(&g_dmg->seq, __ATOMIC_ACQUIRE);
+        if (s1 != s2) continue;                 /* torn -- retry */
+
+        *changed = (s1 != last_dmg_seq);
+        last_dmg_seq = s1;
+        *full = (int)f;
+        return (int)n;
+    }
+    return 0;                                   /* contended: full screen */
 }
 
 static long parse_num(const char *s, long dflt)
@@ -252,7 +326,9 @@ static void refresh_tunables(void)
  * dt is measured against the previous *injected* update, so a burst of commits
  * counts as motion even when we are throttling.
  */
-static void init_parms(long dt_ms)
+/* Fills g_parms[] and returns how many rectangles to submit. */
+static int init_parms(long dt_ms, const struct epdc_damage_rect *dmg, int n_dmg,
+                      int force_full)
 {
     int wf  = t_wf;
     int upd = t_upd;
@@ -262,19 +338,39 @@ static void init_parms(long dt_ms)
 
     if (t_fullevery > 0 && ++updates_since_full >= t_fullevery) {
         updates_since_full = 0;
+        force_full = 1;
         wf  = t_wf;                          /* quality waveform ... */
         upd = 1;                             /* ... and a full flash */
     }
 
-    g_parms[0].rect[0] = 0;
-    g_parms[0].rect[1] = 0;
-    g_parms[0].rect[2] = PANEL_W;
-    g_parms[0].rect[3] = PANEL_H;
-    g_parms[0].waveform_mode = wf;
-    g_parms[0].update_mode   = upd;
-    g_parms[0].flag          = t_flag;
-    g_parms[0].temp          = 0;
-    g_parms[0].reserved      = 0;
+    int n = (force_full || n_dmg <= 0) ? 0 : n_dmg;
+    if (n > (int)EPDC_DAMAGE_MAX) n = (int)EPDC_DAMAGE_MAX;
+
+    for (int i = 0; i < (n ? n : 1); i++) {
+        if (n) {
+            /* Clamp: a rectangle outside the panel is rejected outright, and a
+             * single bad one would cost the whole update. */
+            i32 l = dmg[i].left, t = dmg[i].top;
+            i32 r = dmg[i].right, b = dmg[i].bottom;
+            if (l < 0) l = 0;
+            if (t < 0) t = 0;
+            if (r > PANEL_W) r = PANEL_W;
+            if (b > PANEL_H) b = PANEL_H;
+            if (r <= l || b <= t) { l = 0; t = 0; r = PANEL_W; b = PANEL_H; }
+            g_parms[i].rect[0] = l; g_parms[i].rect[1] = t;
+            g_parms[i].rect[2] = r; g_parms[i].rect[3] = b;
+        } else {
+            g_parms[i].rect[0] = 0; g_parms[i].rect[1] = 0;
+            g_parms[i].rect[2] = PANEL_W; g_parms[i].rect[3] = PANEL_H;
+        }
+        g_parms[i].waveform_mode = wf;
+        g_parms[i].update_mode   = upd;
+        g_parms[i].update_marker = g_parms[0].update_marker;
+        g_parms[i].flag          = t_flag;
+        g_parms[i].temp          = 0;
+        g_parms[i].reserved      = 0;
+    }
+    return n ? n : 1;
 }
 
 /* Returns index into the cache, adding an entry (possibly a negative one) if
@@ -354,8 +450,17 @@ int drmModeAtomicCommit(int fd, void *req, u32 flags, void *user_data)
 
     if (!t_enable) { n_pend = 0; return real_commit(fd, req, flags, user_data); }
 
-    /* Nothing new on screen? Then do not drive the panel. */
-    if (t_skipsame && g_fbid_prop) {
+    attach_damage();
+
+    struct epdc_damage_rect dmg[EPDC_DAMAGE_MAX];
+    int dmg_full = 0, dmg_changed = 1;
+    int n_dmg = read_damage(dmg, &dmg_full, &dmg_changed);
+
+    /* SurfaceFlinger's sequence number is a precise "did anything change"
+     * signal -- better than guessing from buffer ids, so it wins when present. */
+    if (g_dmg) {
+        if (!dmg_changed) { n_pend = 0; return real_commit(fd, req, flags, user_data); }
+    } else if (t_skipsame && g_fbid_prop) {
         u32 sig = 0;
         for (int i = 0; i < n_pend; i++)
             sig = sig * 31u + pend[i] * 131u + pend_fb[i];
@@ -375,15 +480,15 @@ int drmModeAtomicCommit(int fd, void *req, u32 flags, void *user_data)
     }
     last_inject_ms = t;
 
-    init_parms(dt);
     g_parms[0].update_marker++;
+    int n_rect = init_parms(dt, dmg, n_dmg, dmg_full);
 
     for (int i = 0; i < n_pend; i++) {
         int idx = lookup(fd, pend[i]);
         if (idx < 0) continue;
         if (!c_parms_prop[idx] || !c_cnt_prop[idx]) continue;
         real_add(req, pend[i], c_parms_prop[idx], (u64)(usize)&g_parms[0]);
-        real_add(req, pend[i], c_cnt_prop[idx], 1);
+        real_add(req, pend[i], c_cnt_prop[idx], (u64)n_rect);
     }
     n_pend = 0;
 
