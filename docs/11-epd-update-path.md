@@ -1062,3 +1062,74 @@ proper), our own SurfaceFlinger could publish its damage rectangles into a small
 shared-memory region that the shim reads and turns into up to 8 update rects --
 which is exactly the kernel's array size. That skips the unknown transport
 entirely and needs only an SF rebuild.
+
+## Writer side: publishing damage from SurfaceFlinger
+
+Contract: `src/epdc_damage.h` (copy into the AOSP tree, or add `src/` to the
+module's include path). Reader is implemented in `src/epdcshim.c`; it falls back
+to one full-panel rectangle whenever the mapping is missing, so a partial or
+absent writer is never worse than today.
+
+**Where.** `frameworks/native/services/surfaceflinger/CompositionEngine/src/Output.cpp`.
+The dirty region is in hand at the client-composition call site:
+
+```cpp
+1247:  if (const auto dirtyRegion = getDirtyRegion(); !dirtyRegion.isEmpty()) {
+1252:      static_cast<void>(composeSurfaces(dirtyRegion, buffer, bufferFence));
+```
+
+Publish there. Do **not** publish inside `composeSurfaces` itself: two of its
+three call sites (`:1214`, `:1290`) pass `Region::INVALID_REGION`.
+
+**Coordinates.** `getDirtyRegion()` is layer-stack space (824x1648 portrait).
+The kernel blits a plane in output space (1648x824 landscape) -- the panel is
+installed rotated. So transform before publishing:
+
+```cpp
+const Region out = outputState.transform.transform(dirtyRegion);
+```
+
+Publishing layer-stack coordinates will refresh the wrong part of the screen,
+and because the aspect is swapped it will look plausible but be subtly offset --
+worth checking first with a single obvious rectangle.
+
+**Merging.** The kernel takes at most `EPDC_DAMAGE_MAX` (8). `Region` routinely
+holds more. Cheapest correct policy: use the rectangles when there are <= 8,
+otherwise fall back to `out.getBounds()`. Merging by nearest-neighbour area cost
+is better but is a refinement, not a correctness issue -- an over-large
+rectangle only costs refresh time, a missing one leaves stale pixels.
+
+**Protocol.** Single writer, single reader, seqlock -- neither side may block
+the other, both are on the frame path:
+
+```cpp
+auto* s = mDamageShm;                      // mmap'd once, MAP_SHARED
+uint32_t seq = s->seq + 1;                 // odd: write in progress
+__atomic_store_n(&s->seq, seq, __ATOMIC_RELEASE);
+s->count = n;
+s->full  = fullRefreshWanted ? 1 : 0;
+for (...) s->rect[i] = {l, t, r, b};
+__atomic_store_n(&s->seq, seq + 1, __ATOMIC_RELEASE);   // even: stable
+```
+
+Set `magic`/`version` once at creation, *after* `ftruncate`, and only then let
+the reader see a valid header.
+
+**The file.** `/dev/epdc/damage`. `/dev` is root-owned, so init creates the
+directory (already added to `system/etc/init/epdc-clientcomp.rc`):
+
+```
+on post-fs-data
+    mkdir /dev/epdc 0770 system system
+```
+
+SF opens `O_RDWR|O_CREAT`, `ftruncate(4096)`, `mmap(MAP_SHARED)`, once.
+
+**`full`.** Set it when the whole panel needs a clean pass regardless of damage
+-- orientation change, first frame after resume, geometry change. The shim also
+forces one every `persist.epdcshim.fullevery` updates on its own.
+
+**Checking it works.** The shim logs `attached to SurfaceFlinger damage at
+/dev/epdc/damage` once on success. After that, a keystroke should produce a
+small rectangle rather than a whole-panel repaint; compare
+`waveform_clean_work_handler` rates and watch which part of the panel flashes.
