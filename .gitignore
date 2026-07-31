@@ -17,3 +17,7 @@ edl/
 payload.bin
 
 .DS_Store
+
+# onyx-sf branch: proprietary Onyx/Qualcomm prebuilts. Extracted from the
+# device we own; NOT redistributable. Never track these.
+vendor/onyx-prebuilts/

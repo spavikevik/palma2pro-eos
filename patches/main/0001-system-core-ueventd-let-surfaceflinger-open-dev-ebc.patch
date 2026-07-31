@@ -1,0 +1,20 @@
+diff --git a/rootdir/ueventd.rc b/rootdir/ueventd.rc
+index 3927501a4..42919c131 100644
+--- a/rootdir/ueventd.rc
++++ b/rootdir/ueventd.rc
+@@ -36,6 +36,15 @@ subsystem vfio
+ # shortcut: "mtd@NN" expands to "/dev/mtd/mtdNN"
+ 
+ /dev/null                 0666   root       root
++
++# Onyx EPD controller. SurfaceFlinger opens /dev/ebc directly to drive the
++# e-ink update path -- confirmed from Onyx stock SF, which logs
++#     "Going to open /dev/ebc" / "could not open fd /dev/ebc"
++# and then reports hasHwTcon: 0 when the open fails. Without a rule the
++# driver leaves it 0600 root:root and SF (uid system) cannot open it.
++# TODO: tighten to 0660 root system once bring-up no longer needs to probe
++# it from an adb shell (see scripts/ebcprobe, docs/03-ebc-api.md).
++/dev/ebc                  0666   root       root
+ /dev/zero                 0666   root       root
+ /dev/full                 0666   root       root
+ /dev/ptmx                 0666   root       root

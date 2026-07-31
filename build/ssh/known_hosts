@@ -1,4 +1,2 @@
-# 192.168.1.42:2222 SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.16
-# 192.168.1.42:2222 SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.16
-[192.168.1.42]:2222 <host key removed>
-[192.168.1.42]:2222 <host key removed>
+# CHANGE-ME:2222 SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.16
+[CHANGE-ME]:2222 <host key removed>

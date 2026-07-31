@@ -1070,3 +1070,39 @@ podman             available     (Linux container; AOSP does not build on macOS)
                                   heavy swap, multi-hour builds, possible OOM
                                   at link time)
 ```
+
+---
+
+## CORRECTION (see docs/13-epd-ecosystem.md): Onyx shifted the ioctl numbering
+
+Rockchip publishes the ancestor of this driver -- `ebc_dev.h` in
+`drivers/gpu/drm/rockchip/ebc-dev/`. The command names here match it exactly,
+so Onyx ported Rockchip's `ebc-dev` onto a Qualcomm SoC rather than writing one.
+Upstream:
+
+```
+0x7000 EBC_GET_BUFFER        0x7006/7 EBC_{GET,SEND}_OSD_BUFFER
+0x7001 EBC_SEND_BUFFER       0x7008   EBC_GET_AUTO_OLD_BUFFER
+0x7002 EBC_GET_BUFFER_INFO   0x7009   EBC_GET_AUTO_NEW_BUFFER
+0x7003 EBC_SET_FULL_MODE_NUM 0x700a   EBC_GET_AUTO_BG_BUFFER
+0x7004 EBC_ENABLE_OVERLAY    0x700b   EBC_GET_AUTO_CUR_BUFFER
+0x7005 EBC_DISABLE_OVERLAY
+```
+
+**Onyx inserted `GET_EBC_DRIVER_SN` at 0x7002**, so everything from there is +1
+relative to upstream -- which is why `GET_EBC_BUFFER_INFO` answers at 0x7003
+here (both values confirmed on-device). Any mapping in this document derived by
+assuming upstream numbering is therefore off by one above 0x7001.
+
+`struct ebc_buf_info` is confirmed identical to upstream, which retroactively
+validates the geometry decoding above.
+
+Two further points:
+
+* **`0x7000` blocks by design.** Upstream `EBC_GET_BUFFER` waits for a free
+  buffer from the driver's queue. With the vendor stack holding every buffer it
+  never returns -- that is the whole explanation for the two silent device
+  lockups, and why `docs/11` says never to call it.
+* **Onyx's own commands sit above upstream's range.** Rockchip stops at 0x700b;
+  the four their SurfaceFlinger actually uses (`0x701e`, `0x7021`, `0x7022`,
+  `0x7029`) are Onyx additions, so no published source will name them.
