@@ -1,0 +1,17 @@
+diff --git a/daemon/restart_service.cpp b/daemon/restart_service.cpp
+index c942c1f2..0d39dfcf 100644
+--- a/daemon/restart_service.cpp
++++ b/daemon/restart_service.cpp
+@@ -59,6 +59,12 @@ void restart_root_service(unique_fd fd) {
+     }
+ #if defined(__ANDROID__) && !defined(__ANDROID_RECOVERY__)
+     }
++    // onyx-sf branch: /e/OS's adbroot gate reports disabled to adbd even when
++    // the service itself answers getEnabled()==true. On a debuggable build we
++    // already satisfy AOSP's own condition for allowing adb root, so honour it.
++    if (__android_log_is_debuggable()) {
++        enabled = true;
++    }
+     if (!enabled) {
+         WriteFdExactly(fd, "ADB Root access is disabled by system setting - "
+                 "enable in Settings -> System -> Developer options\n");
