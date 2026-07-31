@@ -1,0 +1,24 @@
+# Shared directory for SurfaceFlinger's damage publication (docs/11).
+# /dev is root-owned; SF runs as system and cannot create a file there.
+on post-fs-data
+    mkdir /dev/epdc 0770 system system
+
+# Force SurfaceFlinger to client-composite everything.
+#
+# __sde_plane_atomic_update_epdc only accepts planes exactly the size of the
+# panel. Any layer the composer promotes to its own hardware plane -- nav bar
+# (53px), status bar (90px), IME, popups -- is therefore silently dropped and
+# never reaches the e-ink buffer: drawn, clickable, invisible.
+#
+# 1008 is SurfaceFlinger's mDebugDisableHWC toggle. It resets on every SF
+# restart, hence the property trigger rather than a one-shot at boot. The sleep
+# matters: the trigger fires as soon as init marks the service running, which is
+# before SF publishes its binder interface, and the call is silently dropped
+# without it.
+service epdc_clientcomp /system/bin/sh -c "sleep 8; service call SurfaceFlinger 1008 i32 1"
+    user root
+    oneshot
+    disabled
+
+on property:init.svc.surfaceflinger=running
+    start epdc_clientcomp

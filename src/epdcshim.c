@@ -153,7 +153,7 @@ static void *(*p_mmap)(void *, usize, int, int, int, long);
  * Absent -> we fall back to one full-panel rectangle, i.e. previous behaviour,
  * so an unpatched SF still gets a working display. */
 static const volatile struct epdc_damage_shm *g_dmg;
-static int g_dmg_tried;
+static int g_dmg_tried = RECHECK;   /* try immediately, then every RECHECK */
 static u32 last_dmg_seq;
 
 #define LOGI(...) do { if (p_log) p_log(4, "epdcshim", __VA_ARGS__); } while (0)
@@ -199,18 +199,24 @@ static void resolve(void)
     p_mmap          = dlsym(RTLD_DEFAULT, "mmap");
 }
 
-/* Attach to SurfaceFlinger's damage mapping. Tried once; if SF is not
- * publishing, the shim stays in full-screen mode forever after. */
+/* Attach to SurfaceFlinger's damage mapping.
+ *
+ * Retried rather than attempted once: the composer is a `class hal` service and
+ * issues commits during boot animation and continuous splash, well before
+ * SurfaceFlinger first runs finishFrame and creates the file. A one-shot
+ * attempt always lost that race and left the shim in full-screen mode for the
+ * entire session. */
 static void attach_damage(void)
 {
-    if (g_dmg_tried) return;
-    g_dmg_tried = 1;
-    if (!p_open || !p_mmap) return;
+    if (g_dmg) return;
+    if (++g_dmg_tried < RECHECK) return;
+    g_dmg_tried = 0;
+    if (!p_open || !p_mmap) { LOGI("damage: open=%p mmap=%p", p_open, p_mmap); return; }
 
     int dfd = p_open(EPDC_DAMAGE_PATH, 0 /* O_RDONLY */);
-    if (dfd < 0) return;
+    if (dfd < 0) { LOGI("damage: open(%s) -> %d", EPDC_DAMAGE_PATH, dfd); return; }
     void *m = p_mmap(0, 4096, 1 /* PROT_READ */, 1 /* MAP_SHARED */, dfd, 0);
-    if (!m || m == (void *)-1L) return;
+    if (!m || m == (void *)-1L) { LOGI("damage: mmap -> %p", m); return; }
 
     const volatile struct epdc_damage_shm *s = m;
     if (s->magic != EPDC_DAMAGE_MAGIC || s->version != EPDC_DAMAGE_VERSION) {

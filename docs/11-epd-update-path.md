@@ -1189,3 +1189,47 @@ These are `global` settings, so they survive a reboot, but they belong in the
 product configuration. Disabling animation is worth doing on this device for its
 own sake: every animation frame was a full-panel repaint, so animations cost far
 more here than on an LCD.
+
+## Writer deployed -- and the damage turns out to be coarse
+
+The writer is built, deployed and working end to end:
+
+```
+I CompositionEngine: epdc: publishing damage to /dev/epdc/damage
+I epdcshim: attached to SurfaceFlinger damage at /dev/epdc/damage
+```
+
+and the mapping reads back correctly (`magic 0x43504445, version 1`, `seq`
+advancing, `count 1`).
+
+**But the rectangles are not fine-grained.** Instrumenting the publisher to log
+the region *before* any merging shows SurfaceFlinger's output dirty region is
+consistently a single, essentially full-panel rectangle:
+
+```
+epdc: raw rects=1 bounds=[0 0 1648 824]
+epdc: raw rects=1 bounds=[29 4 1648 820]
+```
+
+So this is not the 8-rectangle merge collapsing anything, and not
+`mDebugDisableHWC` forcing full invalidation -- the same coarse region appears
+with device composition too. `Output`'s `dirtyRegion` is the *union* of what
+changed across all layers, and any full-screen layer that redraws (wallpaper,
+the focused app window) pulls it out to the whole display.
+
+The plumbing is therefore correct and delivers exactly what SF knows; SF simply
+does not know anything finer at this level. Getting true per-character damage
+means going one level down, to **per-layer surface damage** -- the damage the
+producer attaches to each buffer, available on the `OutputLayer` composition
+state -- and unioning only that, rather than taking `Output::getDirtyRegion()`.
+That is the remaining work, and it is a change in what to publish, not in how.
+
+The publisher currently carries a rate-limited (1 in 30) `ALOGI` of the raw
+region. It is one block to delete once the region source is settled.
+
+## Client composition: the init trigger needs a delay
+
+`on property:init.svc.surfaceflinger=running` fires as soon as init marks the
+service running, which is *before* SurfaceFlinger publishes its binder
+interface -- the `service call` is then silently dropped and the panel loses
+every non-full-panel layer again. The service sleeps 8 seconds first.
