@@ -834,3 +834,66 @@ Still unknown: the layout of the update-parameter struct that
 (`[x y w h] waveform_mode, update_mode, update_marker, flag, temp`), which
 matches the 40-byte `ebc_send_update` struct `ebcrefresh` already uses
 successfully -- likely the same struct.
+
+## Measured: the EPD buffer is empty, under both SurfaceFlingers
+
+`src/ebcfb.c` (build: `zig cc -target aarch64-linux-musl -static`) mmaps
+`/dev/ebc` read-only and histograms it. `EBC_GET_BUFFER_INFO` (0x7003) returns:
+
+```
+[2] 824  [3] 1648  [4] 824  [5] 1648  [6] 1648  [7] 824
+```
+
+so 1648x824, 8 bits per pixel, 1357952 bytes. Result in both configurations:
+
+```
+distinct byte values: 1
+most common: 0xff  1359872/1359872 (100.0%)
+verdict: UNIFORM -- no image content in this buffer
+```
+
+* under **Onyx's SF**: expected -- it issues zero DRM commits
+  (`dmesg | grep -c update_epdc` == 0 for a whole boot)
+* under **our SF**: 155 logged plane rejections, and the full-panel planes pass
+  the size check and reach the submit -- **and the buffer is still uniform white**
+
+That is the proof. Passing the size check is not sufficient: the submit
+`0x81f60(vaddr, w, h, stride, upd_data, cnt)` copies *per update rectangle*, so
+with `cnt == 0` it copies nothing. The panel then faithfully displays an empty
+buffer, which is why `ebcrefresh` visibly drives the waveform yet shows nothing.
+
+Chain, fully resolved:
+
+```
+app damage -> Onyx libgui (hwc_epdc_llist) -> Onyx SF (EpdcWrapper::addEpdcList)
+  -> composer HAL (CommitEpdc / onyx_epdc_update_to_display)
+  -> libsdedrm  DRMPlane::SetEpdcUpdParmsAddr / SetEpdcUpdCnt
+  -> DRM plane props EPDC_UPDATE_PARMS_ADDR / EPDC_UPDATE_CNT
+  -> kernel copy_from_user(pstate+0x7dc, ptr, 320) ; cnt -> pstate+0x91c
+  -> __sde_plane_atomic_update_epdc submit
+```
+
+The **vendor half is intact and already on the device**:
+
+```
+/vendor/lib64/libsdedrm.so
+    _ZN7sde_drm8DRMPlane19SetEpdcUpdParmsAddrEP17_drmModeAtomicReqm
+    _ZN7sde_drm8DRMPlane13SetEpdcUpdCntEP17_drmModeAtomicReqj
+/vendor/bin/hw/vendor.qti.hardware.display.composer-service
+    CommitEpdc, onyx_epdc_update_to_display
+```
+
+`hwc_epdc_llist` appears **only** in `/system/lib64/onyxsf/libgui.so` and
+`surfaceflinger_onyx` -- never in any vendor library. So the missing link is
+entirely on the system side, between SF and the composer.
+
+Onyx's SF is not a shortcut around it: re-tested with the display held awake
+(the previous test was invalid -- display asleep), it enables the display and
+holds 90 layers but issues **zero** DRM commits, while logging continuously:
+
+```
+E SurfaceFlinger: ERROR(Unknown error 2147483640, -2147483640).
+                  Failed to call parcel s.read(data)
+```
+
+Ours composites; theirs does not. Ours is the one to fix.
