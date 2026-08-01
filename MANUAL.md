@@ -4,7 +4,10 @@ What the hardware is, how the display actually works, what we changed, and how t
 poke at it without breaking things. Written to be read before touching the
 device, and re-read when something behaves oddly.
 
-Deep dives live in `docs/`; this is the map. Where a claim here was established
+Deep dives live in `docs/`; this is the map. For the machine-level
+contract -- exact ioctl numbers, struct offsets, panel timings, TCON and PMIC
+registers, each marked verified/derived/inferred -- see
+**`docs/19-tcon-panel-abi.md`**. Where a claim here was established
 by measurement or disassembly, the doc that did it is cited.
 
 ---
