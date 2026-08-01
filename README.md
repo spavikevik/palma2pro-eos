@@ -74,6 +74,7 @@ Reference:
 | [docs/16](docs/16-build-flash-test.md) | build, flash and test workflow |
 | [docs/17](docs/17-eink-device-tuning.md) | e-ink device tuning, with the reasoning |
 | [docs/18](docs/18-refresh-algorithms.md) | how other open e-ink projects handle refresh |
+| [docs/21](docs/21-own-kernel.md) | building our own kernel: what Fairphone's sources give us, what is missing, and the three routes |
 | [docs/15](docs/15-task-per-layer-damage.md) | the main open task: per-layer damage |
 | [THIRD_PARTY.md](THIRD_PARTY.md) | what was reused from other projects, and under what licence |
 | [CLAUDE.md](CLAUDE.md) | working notes for coding agents: the non-negotiables, the traps, the method |

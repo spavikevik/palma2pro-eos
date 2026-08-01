@@ -59,3 +59,17 @@ as a fallback: it costs nothing in display quality, and the telemetry problem is
 removing the Onyx apps and firewalling, not by replacing the kernel.
 
 **Chosen path: `/e/OS`.** Concern about the e-ink regression was raised and accepted.
+
+---
+
+## Revisited
+
+This document's verdict — that the EPD driver is the wall — still holds for the
+*mainline Linux* routes. It has softened for the Android route, because two
+things changed after it was written: the EPD interfaces were recovered and
+specified (`docs/19`), and the Fairphone 4 turns out to publish complete
+`msm-4.19` sources for the same SoC.
+
+See **`docs/21-own-kernel.md`**: rebuilding the Android kernel from Fairphone's
+sources is a bounded project, while mainline remains the multi-year one this
+document describes.
