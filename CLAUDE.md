@@ -153,17 +153,16 @@ verbatim Apache copy for GitHub's detector; the real terms are `LICENSING.md`.
 
 ---
 
-## Collaboration
+## Note on issue #1
 
-On large pieces, the owner writes the core logic; the agent scaffolds the seam,
-the tests and the write-up, then reviews. Issue #1 is set up that way — the seam
-(`collectEpdcDamage()`) exists, `docs/15` is a guided walkthrough with hints
-behind `<details>`, and the implementation is deliberately left open.
+Issue #1 is currently written as a guided task: the seam
+(`collectEpdcDamage()`) exists, and `docs/15` is a walkthrough with hints behind
+`<details>` rather than an implementation. That was the owner's choice for that
+issue, not a standing convention.
 
-Prefer offering that shape over delivering a finished implementation, unless
-asked otherwise.
-
----
+Do not silently implement it and remove the exercise. Equally, do not assume the
+same shape applies elsewhere — how much to hand over versus do outright is the
+owner's call, per task. Ask if it is not obvious.
 
 ## State
 
