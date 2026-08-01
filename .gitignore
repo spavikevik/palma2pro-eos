@@ -10,6 +10,11 @@ edl/
 # Recon output has device identifiers in it; keep it local.
 *-recon.txt
 
+# edlclient writes this on every run. It records the Firehose programmer path
+# and the device's EDL serial number -- a device identifier, and an absolute
+# path from whoever ran it.
+edl_config.json
+
 *.img
 *.bin
 *.upx
