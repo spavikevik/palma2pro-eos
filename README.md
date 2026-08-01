@@ -5,17 +5,29 @@ and its telemetry to Chinese servers.
 
 ## Start here
 
+New here? **[docs/20 — how this port happened](docs/20-history-and-method.md)** is
+the narrative: what was tried, which routes were dead ends and why, and the
+method that worked. It makes everything below make sense.
+
 | | |
 |---|---|
+| **[docs/20](docs/20-history-and-method.md)** | how we got here: the phases, the failed routes, the method, and the mistakes worth not repeating |
 | **[INSTALL.md](INSTALL.md)** | build it and install it on your own device, start to finish: unlock, backup, blobs, build, flash, boot |
-| **[MANUAL.md](MANUAL.md)** | operator's manual: the hardware, how a pixel reaches the panel, the `/dev/ebc` API, what we added, the debugging playbook, and the traps |
-| **[THIRD_PARTY.md](THIRD_PARTY.md)** | what was reused from other projects, and under what licence |
-| [docs/19](docs/19-tcon-panel-abi.md) | developer reference: TCON, panel, EPD ioctls and DRM properties, with confidence markers |
+| **[MANUAL.md](MANUAL.md)** | operator's manual: the hardware, how a pixel reaches the panel, the `/dev/ebc` API, the debugging playbook, and the traps |
+
+Reference:
+
+| | |
+|---|---|
+| [docs/19](docs/19-tcon-panel-abi.md) | developer reference: TCON, panel, EPD ioctls and DRM properties, each claim marked verified/derived/inferred |
 | [docs/16](docs/16-build-flash-test.md) | build, flash and test workflow |
 | [docs/17](docs/17-eink-device-tuning.md) | e-ink device tuning, with the reasoning |
-| [docs/18](docs/18-refresh-algorithms.md) | how other open e-ink projects do refresh |
-| [docs/15](docs/15-task-per-layer-damage.md) | the open task: per-layer damage |
-| [docs/20](docs/20-history-and-method.md) | how this port happened, the routes that failed, and the method |
+| [docs/18](docs/18-refresh-algorithms.md) | how other open e-ink projects handle refresh |
+| [docs/15](docs/15-task-per-layer-damage.md) | the main open task: per-layer damage |
+| [THIRD_PARTY.md](THIRD_PARTY.md) | what was reused from other projects, and under what licence |
+
+Open work is tracked in [issues](https://github.com/spavikevik/palma2pro-eos/issues),
+labelled by difficulty.
 
 ## Device
 
