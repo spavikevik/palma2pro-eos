@@ -25,7 +25,6 @@ For contrast, the numbers that mattered: `soong_build` peaked at **23 GB** and
 | `build/ssh/entrypoint.sh` | validates, then starts sshd; fails closed |
 | `build/ssh/builder.env` | host/port/key/tree/lunch + env overrides |
 | `build/ssh/known_hosts` | pinned host key |
-| `build/ssh/apply-fix.sh` | patch script for an already-deployed copy |
 | `scripts/builder.sh` | the only thing you invoke |
 | `scripts/sync-to-builder.sh` | pushes our work (not the AOSP tree) |
 

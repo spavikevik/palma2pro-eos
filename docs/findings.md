@@ -1145,7 +1145,7 @@ lines later.
 
 Both changes are now applied to `NetBpfLoad.cpp` (26 insertions), with the
 reasoning in-comment and `NetBpfLoad.cpp.orig` kept. The reusable patcher is
-`build/patches/netbpfload-nonfatal.py` (idempotent, refuses to guess if upstream
+a `netbpfload-nonfatal.py` helper (idempotent, refusing to guess if upstream
 moves).
 
 **Honest limitation:** this preserves *boot*, not *function*. BPF programs
@@ -1212,7 +1212,7 @@ precedent for a port of this device.
 ## GSI with stock's BPF tolerance: past the reboot, into a netd crashloop
 
 Reproduced stock's tolerance in the A15 GSI with two text edits (no binary
-patching), via `build/patches/gsi-bpf-tolerant.sh`:
+patching), via a `gsi-bpf-tolerant.sh` helper:
 
 * `/system/etc/init/netbpfload.rc` -- commented out
   `reboot_on_failure reboot,netbpfload-missing` (which is exactly what AOSP's own
@@ -1298,7 +1298,11 @@ fallback is no longer needed.
 
 ### Status of the two suppression edits
 
-`build/patches/gsi-bpf-tolerant.sh` (now handling both GSI layouts) reliably
+> The two helper scripts described here were removed from the repository along
+> with the GSI route itself, which is abandoned (see the conclusion below). The
+> edits they made are described in full above, which is the part worth keeping.
+
+That helper (extended to handle both GSI layouts) reliably
 removes the reboot loop -- both images ran 700+ seconds instead of dying at
 16-20s. But suppressing the reboot alone never produces a usable system, because
 netd needs the programs. It was a diagnostic tool, not a fix.
