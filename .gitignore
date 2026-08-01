@@ -21,3 +21,10 @@ payload.bin
 # onyx-sf branch: proprietary Onyx/Qualcomm prebuilts. Extracted from the
 # device we own; NOT redistributable. Never track these.
 vendor/onyx-prebuilts/
+
+# Onyx proprietary blobs extracted from the device we own. The kernel is a
+# modified Linux for which Onyx publishes no source (their GPL-2.0 violation);
+# the dtb/dtbo and vendor bits are proprietary. NOT redistributable -- they were
+# purged from git history before this repo was ever pushed. INSTALL.md step 3
+# tells you how to extract them from your own device.
+device/onyx/*/prebuilt/
