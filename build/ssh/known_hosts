@@ -1,2 +1,2 @@
-# CHANGE-ME:2222 SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.16
-[CHANGE-ME]:2222 <host key removed>
+# Host key is pinned per machine and is intentionally not shipped.
+# Populate it with:  scripts/builder.sh pin <expected-fingerprint>
