@@ -148,6 +148,10 @@ static int  (*p_prop_get)(const char *, char *);
 static int  (*p_clock_gettime)(int, void *);
 static int  (*p_open)(const char *, int, ...);
 static void *(*p_mmap)(void *, usize, int, int, int, long);
+static int  (*p_ioctl)(int, unsigned long, ...);
+static int  (*p_close)(int);
+static int  (*p_nanosleep)(const void *, void *);
+static int  (*p_pthread_create)(unsigned long *, const void *, void *(*)(void *), void *);
 
 /* Damage published by SurfaceFlinger, if it is running a build that does so.
  * Absent -> we fall back to one full-panel rectangle, i.e. previous behaviour,
@@ -197,6 +201,88 @@ static void resolve(void)
     p_clock_gettime = dlsym(RTLD_DEFAULT, "clock_gettime");
     p_open          = dlsym(RTLD_DEFAULT, "open");
     p_mmap          = dlsym(RTLD_DEFAULT, "mmap");
+    p_ioctl         = dlsym(RTLD_DEFAULT, "ioctl");
+    p_close         = dlsym(RTLD_DEFAULT, "close");
+    p_nanosleep     = dlsym(RTLD_DEFAULT, "nanosleep");
+    p_pthread_create = dlsym(RTLD_DEFAULT, "pthread_create");
+}
+
+static long now_ms(void);   /* defined below, with the other tunable helpers */
+
+/* --- settle pass ---------------------------------------------------------
+ *
+ * Borrowed from Modos Caster, which drives pixels in a fast binary mode while
+ * they are changing and re-renders them in greyscale once they stop. Its
+ * version is per-pixel in FPGA gateware; ours is per-screen in a timer, but the
+ * user-visible behaviour is the same: responsive while moving, clean once still.
+ *
+ * This needs no atomic commit and no damage. The composited content is already
+ * in the EPD buffer -- the panel simply has not been driven with a quality
+ * waveform. So a settle is one SET_EBC_SEND_UPDATE straight to /dev/ebc, the
+ * same call src/ebcrefresh.c makes.
+ *
+ * Deliberately fires only when the screen has been quiet for `settlems`. That
+ * is the flaw in a plain `fullevery` counter, which fires on a count and so can
+ * flash in the middle of a scroll -- exactly when the user is least willing to
+ * pay for it.
+ */
+#define EBC_DEVICE           "/dev/ebc"
+#define EBC_SEND_UPDATE      0x700c
+
+struct ebc_upd {
+    i32 rect[4];
+    i32 waveform_mode;
+    i32 update_mode;
+    i32 update_marker;
+    i32 temp;
+    i32 flag;
+    i32 reserved;
+};
+
+static int g_settle_pending;      /* something was drawn since the last settle */
+static int t_settlems;            /* 0 disables */
+static int t_settlewf = 2;        /* GC16: the quality mode */
+
+static void settle_now(void)
+{
+    if (!p_open || !p_ioctl) return;
+    int fd = p_open(EBC_DEVICE, 2 /* O_RDWR */);
+    if (fd < 0) return;
+
+    struct ebc_upd u;
+    for (usize i = 0; i < sizeof u; i++) ((unsigned char *)&u)[i] = 0;
+    u.rect[0] = 0; u.rect[1] = 0; u.rect[2] = PANEL_W; u.rect[3] = PANEL_H;
+    u.waveform_mode = t_settlewf;
+    u.update_mode   = 1;          /* a settle is deliberately the full pass */
+    u.update_marker = 1;
+    u.flag          = t_flag;
+    p_ioctl(fd, EBC_SEND_UPDATE, &u);
+    if (p_close) p_close(fd);
+}
+
+static void *settle_thread(void *arg)
+{
+    (void)arg;
+    struct { long sec; long nsec; } ts = { 0, 50 * 1000 * 1000 };  /* 50 ms */
+    for (;;) {
+        if (p_nanosleep) p_nanosleep(&ts, 0);
+        if (!t_settlems || !g_settle_pending) continue;
+        long quiet = now_ms() - last_inject_ms;
+        if (quiet < t_settlems) continue;
+        g_settle_pending = 0;
+        settle_now();
+    }
+    return 0;
+}
+
+static void start_settle_thread(void)
+{
+    static int started;
+    if (started || !p_pthread_create) return;
+    started = 1;
+    unsigned long tid;
+    if (p_pthread_create(&tid, 0, settle_thread, 0) == 0)
+        LOGI("settle thread running");
 }
 
 /* Attach to SurfaceFlinger's damage mapping.
@@ -312,6 +398,8 @@ static void refresh_tunables(void)
     t_fastms   = (int)prop_num("persist.epdcshim.fastms", 250);
     t_fullevery= (int)prop_num("persist.epdcshim.fullevery", 0);
     t_skipsame = (int)prop_num("persist.epdcshim.skipsame", 1);
+    t_settlems = (int)prop_num("persist.epdcshim.settlems", 0);
+    t_settlewf = (int)prop_num("persist.epdcshim.settlewf", 2);
 }
 
 /* There is no damage information available: the DRM planes expose no
@@ -488,6 +576,8 @@ int drmModeAtomicCommit(int fd, void *req, u32 flags, void *user_data)
 
     g_parms[0].update_marker++;
     int n_rect = init_parms(dt, dmg, n_dmg, dmg_full);
+    g_settle_pending = 1;
+    start_settle_thread();
 
     for (int i = 0; i < n_pend; i++) {
         int idx = lookup(fd, pend[i]);

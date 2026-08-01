@@ -121,6 +121,18 @@ Sources: [LWN: Rockchip EBC driver](https://lwn.net/Articles/891304/),
 
 ## 4. Modos Caster: the most advanced open algorithm
 
+**On porting Caster itself: not viable, for concrete reasons.** Caster targets a
+Xilinx Spartan-6 (built with ISE 14.7); our TCON is a Lattice CertusPro-NX, a
+different vendor and toolchain. Caster takes DisplayPort/DVI through dedicated
+decoder chips and has no MIPI DSI input, while our TCON is fed DSI by the SoC.
+Most decisively, its per-pixel state is 16 bits x 1.36M pixels, about 2.7 MB,
+which is why the board carries DDR3-800 at ~540 MB/s -- a CertusPro-NX-100 has
+well under 1 MB of block RAM, so the core architecture does not fit before any
+I/O work is even considered. Add that wrong waveforms can permanently damage an
+EPD panel, and that it would mean discarding Onyx's working waveform handling.
+
+The algorithms, however, port fine, and one of them is now implemented (below).
+
 Caster is an open FPGA controller (Glider / Modos Paper Monitor). It is worth
 studying because it does in gateware what we would have to approximate in
 policy, and it shows what "good" looks like:
@@ -159,11 +171,24 @@ Ordered by value against effort, given where `epdcshim` and the damage work are.
 **a. Try `EPD_AUTO` (logical mode 0).** One `setprop`. The driver may already do
 histogram-style selection better than our fixed `wf 2`. Untested and free.
 
-**b. Settle pass (Caster's hybrid, KOReader's promotion).** While updates keep
-arriving within `fastms`, submit a cheap waveform; when the stream stops, submit
-the last region once more in GC16. This is strictly better than the current
-`fullevery` counter, which fires on a count regardless of whether the screen is
-busy or idle — the worst case being a flash *during* scrolling.
+**b. Settle pass -- IMPLEMENTED.** `persist.epdcshim.settlems` /
+`settlewf`. A timer thread in the shim watches for the screen going quiet and
+then issues one quality-waveform pass straight to `/dev/ebc` (ioctl `0x700c`,
+the same call `src/ebcrefresh.c` makes). No atomic commit and no damage needed:
+the composited content is already in the EPD buffer, it has simply never been
+driven with a good waveform.
+
+Caster does this per pixel in gateware; ours is per screen on a timer, but the
+user-visible behaviour matches -- fast while moving, clean once still. It is
+strictly better than `fullevery`, which fires on a count regardless of activity
+and so can flash in the middle of a scroll, exactly when the user is least
+willing to pay for it. `fullevery` is now off by default.
+
+Verified reaching the driver:
+
+```
+epdc_ioctl(): SET_EBC_SEND_UPDATE -- magic[1] [x=0 y=0 w=1648 h=824]!flags = 0x21000!
+```
 
 **c. Per-rect modes.** The kernel array is 8 *independent* update structs, each
 with its own `waveform_mode`. We currently write one mode into all of them. A
