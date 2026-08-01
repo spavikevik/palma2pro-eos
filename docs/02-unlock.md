@@ -1,5 +1,15 @@
 # Unlocking the Palma 2 Pro bootloader
 
+> **Credit.** The Fairphone 4 ABL swap is not our discovery. It was published by
+> [`Kisuke-CZE/Palma_2_Pro-tips`](https://github.com/Kisuke-CZE/Palma_2_Pro-tips),
+> and the Palma 2 (non-Pro) rooting method it builds on is
+> [`jdkruzr/BooxPalma2RootGuide`](https://github.com/jdkruzr/BooxPalma2RootGuide)
+> (CC0-1.0), which in turn credits
+> [Renate at MobileRead](https://www.temblast.com/edl.htm) for the EDL material.
+> What is ours is the host-side `devinfo` finish described under "How it really
+> went" — needed because this panel cannot display the confirmation prompt the
+> published procedure expects you to press. See `THIRD_PARTY.md`.
+
 **STATUS: DONE.** `flash.locked=0`, `verifiedbootstate=orange`.
 
 Not via the fastboot route this document originally described — via a direct `devinfo`

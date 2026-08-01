@@ -111,7 +111,8 @@ See `docs/02-unlock.md`.
 ## Licence
 
 Code is dual licensed **Apache-2.0 OR MIT**; documentation under `docs/` is
-**CC BY-SA 4.0**. See [LICENSE](LICENSE).
+**CC BY-SA 4.0**. See [LICENSING.md](LICENSING.md) for the terms; `LICENSE` is
+a verbatim Apache-2.0 copy for automated detection.
 
 No Onyx binaries are included or licensed here — the kernel, vendor libraries,
 waveform blob and TCON firmware are extracted by each user from their own device

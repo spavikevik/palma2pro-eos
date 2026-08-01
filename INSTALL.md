@@ -41,6 +41,11 @@ drives a remote x86_64 builder over SSH (`docs/05`, `scripts/builder.sh`).
 Onyx's own bootloader will not unlock. The workaround uses the Fairphone 4's
 ABL, which runs because the FP4 shares the SM7225 SoC.
 
+This technique is not ours: the Fairphone 4 ABL swap was published by
+[`Kisuke-CZE/Palma_2_Pro-tips`](https://github.com/Kisuke-CZE/Palma_2_Pro-tips),
+building on [`jdkruzr/BooxPalma2RootGuide`](https://github.com/jdkruzr/BooxPalma2RootGuide)
+and Renate's EDL work at MobileRead. Full credits in `THIRD_PARTY.md`.
+
 Full detail and rationale: **`docs/02-unlock.md`**. Summary:
 
 1. Enter EDL: `adb reboot edl` (`adb reboot bootloader` does **not** help here).

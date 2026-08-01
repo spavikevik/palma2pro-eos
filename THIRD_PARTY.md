@@ -94,6 +94,59 @@ redistributed. `docs/02`.
 
 ---
 
+## Unlocking and rooting: whose work this is
+
+Neither technique originates here. Both were published by others first, and the
+project would have had no starting point without them.
+
+**`Kisuke-CZE/Palma_2_Pro-tips`** — <https://github.com/Kisuke-CZE/Palma_2_Pro-tips>.
+No licence stated at time of writing.
+**This is where the Fairphone 4 ABL swap for the Palma 2 *Pro* comes from.** The
+insight it publishes — "since hardware is similar to Fairphone 4 we will take
+Fairphone image to help" — is the whole basis of `docs/02` and
+`scripts/fetch-fp4-abl.sh`: Onyx strips the unlock commands out of their ABL, but
+the FP4's ABL is signed for the same SM7225 and still has them. It also
+documents the Magisk-patched-boot-via-EDL rooting flow we followed.
+
+**`jdkruzr/BooxPalma2RootGuide`** — <https://github.com/jdkruzr/BooxPalma2RootGuide>,
+**CC0-1.0**.
+The published rooting method for the Palma 2 (non-Pro): pull the boot partitions
+over EDL, patch with Magisk, write them back. `docs/02` refers to this as "the
+published Boox Palma 2 rooting method" — the one that **bootloops on a Pro**,
+which is what forced the ABL route in the first place. Establishing that it does
+not transfer to this model was a useful negative result, and it is that guide's
+result being tested.
+
+**Renate, MobileRead** — <https://www.temblast.com/edl.htm>.
+Credited by the guide above as the source of its EDL material, and the origin of
+much of the practical Qualcomm EDL knowledge the Boox community relies on.
+
+**Magisk** (topjohnwu) — **GPL-3.0**.
+Root. Used as shipped; nothing modified or redistributed here.
+
+**bkerler/edl** — MIT. The EDL client itself (also listed under Tools).
+
+**Fairphone / e Foundation** — Fairphone publishes GPL-compliant sources and
+images, and `scripts/fetch-fp4-abl.sh` points at
+<https://images.ecloud.global/community/FP4/> as one place to obtain an FP4 ABL.
+The ABL binary itself is Qualcomm proprietary and is **not** redistributed by
+this repository — the script fetches it, it is gitignored.
+
+### Where we diverged
+
+Worth recording so the difference is not mistaken for the original method: the
+published procedure completes the unlock through `fastboot flashing unlock`,
+which requires pressing a confirmation on screen. **On this device that menu is
+invisible** — the bootloader renders to a DSI framebuffer that does not exist on
+an EPD panel, so the screen stays blank and the prompt cannot be answered.
+
+We finished the unlock host-side instead, writing `is_unlocked` and
+`is_unlock_critical` directly into `devinfo` (offsets 13 and 14) over EDL:
+`scripts/patch-devinfo-unlock.sh`. That part is ours, and `docs/02` records it
+under "How it really went".
+
+---
+
 ## Ideas: algorithms reimplemented after reading theirs
 
 **Modos Caster / Glider** (Modos Labs) — **CERN-OHL-S v2** (hardware and
