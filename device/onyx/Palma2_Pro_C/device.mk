@@ -190,7 +190,6 @@ $(call inherit-product-if-exists, $(DEVICE_PATH)/bringup-debug.mk)
 # modifying or redistributing the APK itself. See docs/17.
 PRODUCT_PACKAGES += \
     BlissLauncherEinkOverlay \
-    DeskClockStaticIconOverlay \
     FrameworkEinkOverlay
 
 # The navigation bar does not exist AT ALL without this: config_showNavigationBar

@@ -6,6 +6,12 @@
          only what the prebuilt directory and the privapp allowlist are called. -->
     <overlay android:targetPackage="foundation.e.blisslauncher"
              android:isStatic="true"
-             android:priority="1" />
+             android:priority="1000" />
+    <!--
+      Priority MUST exceed /e/OS's own foundation.e.blisslauncher.overlay, which
+      declares 100. Overlays are applied in priority order and the last one wins,
+      so at priority 1 this overlay was applied first and then overwritten - it
+      reported STATE_ENABLED the whole time while doing nothing.
+    -->
     <application android:hasCode="false" />
 </manifest>

@@ -13,6 +13,6 @@
     -->
     <overlay android:targetPackage="android"
              android:isStatic="true"
-             android:priority="99" />
+             android:priority="9999" />
     <application android:hasCode="false" />
 </manifest>

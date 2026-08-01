@@ -39,4 +39,20 @@
 
     <!-- delay before a folder opens on hover; no animation, just waiting -->
     <integer name="config_folderDelay">200</integer>
+
+    <!--
+      Disable the live analog clock icon.
+
+      Upstream Launcher3 ships clock_component_name EMPTY, which means no
+      dynamic clock. /e/OS turns it on through their own overlay, pointing it at
+      com.android.deskclock. IconProvider then routes that package through
+      ClockDrawableWrapper and the icon ticks once a second.
+
+      On this panel each tick costs a full-panel refresh, and it was the only
+      thing repainting the launcher at idle (~9 refreshes per 10 s).
+
+      Setting it back to empty is all that is needed: no override of DeskClock's
+      own icon, and no source patch. The app keeps its normal static icon.
+    -->
+    <string name="clock_component_name" translatable="false"></string>
 </resources>
