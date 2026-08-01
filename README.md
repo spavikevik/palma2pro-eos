@@ -7,6 +7,7 @@ and its telemetry to Chinese servers.
 
 | | |
 |---|---|
+| **[INSTALL.md](INSTALL.md)** | build it and install it on your own device, start to finish: unlock, backup, blobs, build, flash, boot |
 | **[MANUAL.md](MANUAL.md)** | operator's manual: the hardware, how a pixel reaches the panel, the `/dev/ebc` API, what we added, the debugging playbook, and the traps |
 | **[THIRD_PARTY.md](THIRD_PARTY.md)** | what was reused from other projects, and under what licence |
 | [docs/16](docs/16-build-flash-test.md) | build, flash and test workflow |
