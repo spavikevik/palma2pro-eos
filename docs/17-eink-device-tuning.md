@@ -74,6 +74,46 @@ dark-on-light.
 This lives in `/data`, so it survives reboots but not a wipe. Shipping it
 properly means outranking /e/OS's default in the build.
 
+## Contrast, blur and animators
+
+```sh
+settings put global animator_duration_scale 0        # ripples, spinners, overscroll
+settings put secure high_text_contrast_enabled 1     # crisper glyph edges
+# /system/build.prop
+ro.surface_flinger.supports_background_blur=0
+```
+
+`animator_duration_scale` is easy to miss: the SettingsProvider defaults carry
+only `def_window_animation_scale` and `def_window_transition_scale`, so
+**animators were still running** after those defaults were shipped. Ripples,
+progress spinners and overscroll glow are animators, and each frame of them is a
+panel refresh.
+
+Blur is pure cost here: e-ink has no subpixel structure, so a blurred backdrop
+dithers into noise and repaints a large area to do it.
+
+## Looking like the stock ROM
+
+Stock Boox is flat, high contrast and close to monochrome. The nearest
+equivalent without replacing the launcher is Launcher3's **themed icons**, which
+render app icons as single-colour monochrome glyphs instead of the colourful
+adaptive icons /e/OS ships. BlissLauncher supports them
+(`pref_themed_icons_title`).
+
+The preference is not a plain boolean. Launcher3 encodes it as a suffix on the
+icon shape path in `com.android.launcher3.device.prefs.xml`:
+
+```xml
+<string name="pref_icon_shape_path">M 78.9068 ... z,no-theme</string>
+```
+
+Toggle it from the launcher's own settings (long press home -> Home settings)
+rather than editing that string by hand.
+
+Caveat worth testing before committing to it: themed icons only look right for
+apps that ship a monochrome layer in their adaptive icon. Apps that do not fall
+back to a generated glyph, which can look worse than the original.
+
 ## Light theme
 
 ```sh
