@@ -19,7 +19,12 @@ Complete reproduction: unlock, back up, build, flash, boot.
 >
 > This procedure is for hardware **you own**. It voids the warranty, and the
 > blobs in step 3 come from your own device because none are distributed here.
-> See the scope note in `README.md`.
+>
+> **The result runs SELinux permissive, with verified boot disabled, an
+> unlocked bootloader that cannot be re-locked, and a prebuilt kernel that
+> cannot be patched.** Anyone with physical access can read or modify it. Do not
+> daily-drive this unless you accept that. See "Security posture" in
+> `README.md`.
 
 ---
 

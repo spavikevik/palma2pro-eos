@@ -23,7 +23,7 @@ by measurement or disassembly, the doc that did it is cited.
 | Panel | E Ink `ED061KC1`, **1648x824**, 16 grey levels |
 | TCON | Lattice CertusPro-NX FPGA, firmware `lfcpnx100_tcon_fw_a*.bin`, fed **MIPI DSI** by the SoC |
 | EPD PMIC | TI TPS65185 |
-| Verified boot | AVB **disabled** (vbmeta flags 0x3); SELinux **permissive** via cmdline |
+| Verified boot | AVB **disabled** (vbmeta flags 0x3); SELinux **permissive** via cmdline. Both deliberate, both still open (issues #10, #11). See the security posture note in `README.md` before daily use. |
 
 The mixed-generation stack (A15 system, A11 vendor) is the root of a whole class
 of problems: vendor libraries expect Android 11 behaviour, and `ro.*` properties

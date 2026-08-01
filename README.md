@@ -21,6 +21,33 @@ independently written display stack work with this hardware — ioctl numbers,
 struct layouts, register values. Those are facts about an interface, and this
 repository contains no code copied from Onyx.
 
+### Security posture — read before daily use
+
+This build deliberately runs with security mechanisms **off**, because they had
+to be to get it booting at all:
+
+* **SELinux is permissive.** Policy violations are logged and allowed. The
+  Android 15 system over Onyx's Android 11 vendor produced denials during
+  bring-up and this was never revisited. Tracked as issue #11.
+* **Verified boot (AVB) is disabled** — `vbmeta` flags `0x3`. Nothing checks
+  that `boot` or `system` are what you built.
+* **The bootloader is unlocked and cannot be re-locked** with your own keys.
+  Onyx's ABL has no custom-key support; the unlock was done by patching
+  `devinfo` directly. Issue #10 investigates whether a custom ABL could change
+  this.
+* **The kernel is a prebuilt binary with no available source.** Onyx publishes
+  none, so it cannot be patched — including for kernel CVEs. It stays at
+  whatever Onyx shipped.
+
+The practical consequence: **anyone with physical access can read or modify the
+device**, and there is no path to fixing kernel vulnerabilities.
+
+**Do not use this as a daily driver unless you understand and accept that.** It
+is reasonable for reading, for development, and for a device that holds nothing
+you would mind losing. It is not reasonable for banking, for a primary phone
+number, or for anything you would be unhappy to see extracted from a device
+someone else picked up.
+
 **This will void your warranty and can permanently break your device.** Unlocking
 the bootloader wipes `/data` unconditionally, and incorrect EPD power sequencing
 or waveform data can damage the panel. There is no warranty of any kind — see
