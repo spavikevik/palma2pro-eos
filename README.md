@@ -49,6 +49,7 @@ Reference:
 | [docs/18](docs/18-refresh-algorithms.md) | how other open e-ink projects handle refresh |
 | [docs/15](docs/15-task-per-layer-damage.md) | the main open task: per-layer damage |
 | [THIRD_PARTY.md](THIRD_PARTY.md) | what was reused from other projects, and under what licence |
+| [CLAUDE.md](CLAUDE.md) | working notes for coding agents: the non-negotiables, the traps, the method |
 
 Open work is tracked in [issues](https://github.com/spavikevik/palma2pro-eos/issues),
 labelled by difficulty.
