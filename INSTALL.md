@@ -167,21 +167,91 @@ zig cc -target aarch64-linux-musl -static -O2 -o out/ebcrefresh src/ebcrefresh.c
 Everything goes through EDL.
 
 ```sh
-adb reboot edl                                   # screen stays blank; normal
-
-# logical partitions live inside `super`; resolve extents from lpdump
-scripts/flash-logical-via-edl.py out/target/product/Palma2_Pro_C/system.img \
-    lpdump.txt system_b --go
+adb reboot edl        # screen stays blank in EDL; that is normal
 ```
 
-Details, including the `super` offset arithmetic and how to resize a logical
-partition when an image no longer fits: **`docs/08-lp-resize.md`**,
-`scripts/lp-resize-partition.py`.
+### 7.0 Pre-flight
 
-Iterating on one binary later? Do not reflash a partition —
-`scripts/edl-delta-flash.py` writes only changed sectors, and
-`docs/16-build-flash-test.md` describes the much faster `adb push` loop that
-avoids EDL entirely.
+**Confirm no OTA snapshot merge is pending.** An unmerged Virtual A/B snapshot
+will interfere with writing logical partitions:
+
+```sh
+adb shell snapshotctl dump          # want: "Update state: none"
+adb shell ls /metadata/ota/snapshots # want: empty
+```
+
+`-cow` entries in `super`'s metadata are inert leftovers from a completed OTA and
+are fine; a *live* snapshot is not.
+
+**Know your slot.** This device ships with **`_b`** active. Every partition name
+below assumes that — check with `adb shell getprop ro.boot.slot_suffix` and
+adjust if yours differs. Writing the inactive slot is a silent no-op that looks
+exactly like a successful flash.
+
+### 7.1 Physical partitions
+
+| partition | image | why |
+|---|---|---|
+| `vbmeta` | patched, **flags `0x3`** | disables verification and hashtree; without it a modified `boot`/`system` will not boot |
+| `boot_b` | `out/.../boot.img` | our kernel cmdline, including `androidboot.selinux=permissive` |
+
+`vbmeta` must be patched before writing — flags `0x3` sets both
+`disable-verity` and `disable-verification`. `avbtool` does this, or patch byte
+123 of the header directly.
+
+**`dtbo` is not flashed.** We keep Onyx's stock DTBO; the device tree ships it as
+a prebuilt. Only write `dtbo_b` if you have deliberately modified it, and keep
+the original — it is the only description the kernel has of this board.
+
+### 7.2 Logical partitions (inside `super`)
+
+These live in `super` and are written by resolving their extents from `lpdump`:
+
+```sh
+adb shell lpdump > lpdump.txt        # or lpdump the super image offline
+
+scripts/flash-logical-via-edl.py out/target/product/Palma2_Pro_C/system.img      lpdump.txt system_b      --go
+scripts/flash-logical-via-edl.py out/target/product/Palma2_Pro_C/product.img     lpdump.txt product_b     --go
+scripts/flash-logical-via-edl.py out/target/product/Palma2_Pro_C/system_ext.img  lpdump.txt system_ext_b  --go
+```
+
+**Do not flash `vendor` or `odm`.** This port deliberately keeps Onyx's
+**Android 11 vendor BSP** — it owns the EPD driver, the composer and the display
+firmware, and it is the whole reason the panel works at all. Overwriting it with
+an AOSP vendor image gives you a device with no display stack.
+
+**If an image no longer fits**, grow the partition rather than truncating it:
+
+```sh
+scripts/lp-resize-partition.py --slot b <partition> <new-size>
+```
+
+`product_b` and `system_ext_b` both needed this during bring-up. `super` has
+unallocated space. **Re-dump `lpdump` immediately before resizing** — acting on a
+stale dump once meant resizing a partition that had already been resized, and
+diagnosing the wrong one entirely.
+
+### 7.3 What is not flashed
+
+* `vendor`, `odm` — kept stock, see above
+* `userdata` — already wiped by the unlock in step 1
+* `metadata`, `modemst*`, `fsg`, `persist` — never touch these; they carry IMEI,
+  modem and sensor calibration and are not reconstructible
+
+### 7.4 Verify before rebooting out of EDL
+
+Read back a few sectors of each partition you wrote and compare against the
+source image. `scripts/edl-verify-restore.sh` does this for a backup; the same
+principle applies here. A partial write is indistinguishable from a good one
+until the device fails to boot.
+
+### Iterating later
+
+Do **not** reflash a whole partition to change one file.
+`scripts/edl-delta-flash.py old.img new.img lpdump.txt <partition> --go` writes
+only changed sectors, and `docs/16-build-flash-test.md` describes the much
+faster `adb push` loop that avoids EDL entirely. Almost all of the display work
+in this project was done without flashing an image.
 
 ## 8. Install the display shim
 
@@ -264,6 +334,8 @@ refresh. Turning it off took idle refreshes from ~12 per 10 s to zero.
 | SurfaceFlinger crash loop | restore the previous binary from `/data/local/tmp/` |
 | no boot, adb dead | EDL, restore from your step-2 backup |
 | bootloop after a partition write | wrong extents or a stale `lpdump` — re-dump before patching metadata |
+| boots but no display stack at all | you flashed `vendor` or `odm` — restore Onyx's from your step-2 backup |
+| flash "succeeded" but nothing changed | you wrote the inactive slot; check `ro.boot.slot_suffix` |
 
 ---
 
