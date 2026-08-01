@@ -1,0 +1,60 @@
+# Licensing
+
+Copyright 2026 Stefan Pavikjevikj.
+
+This repository is licensed in two parts.
+
+## Code — Apache-2.0 OR MIT, at your option
+
+Everything except `docs/` — `src/`, `scripts/`, `patches/`, `device/`,
+`build/`, `tests/`, and the top-level Markdown files — is dual licensed:
+
+* Apache License 2.0 — [`LICENSE-APACHE`](LICENSE-APACHE)
+* MIT License — [`LICENSE-MIT`](LICENSE-MIT)
+
+Use whichever you prefer. SPDX: `Apache-2.0 OR MIT`.
+
+The dual form exists so this drops cleanly into either world: Apache-2.0 is what
+AOSP, LineageOS and /e/OS use and carries an explicit patent grant, while MIT
+suits projects that prefer the shorter, more permissive form.
+
+## Documentation — CC BY-SA 4.0
+
+Everything under `docs/` is licensed under the Creative Commons
+Attribution-ShareAlike 4.0 International License —
+[`docs/LICENSE-CC-BY-SA-4.0`](docs/LICENSE-CC-BY-SA-4.0).
+SPDX: `CC-BY-SA-4.0`.
+
+Those files are the reverse-engineering write-ups: the EBC ioctl API, the EPD
+update path, the refresh-algorithm survey, the hardware notes. Share-alike keeps
+that work open if it is republished or built upon.
+
+`MANUAL.md`, `INSTALL.md`, `README.md` and `THIRD_PARTY.md` are at the top level
+and fall under the code licence, so they can be copied into a build system,
+wiki or downstream repository without the share-alike obligation.
+
+---
+
+## What this does NOT cover
+
+**Onyx proprietary material.** This repository contains no Onyx binaries and
+none can be licensed here. The kernel `Image`, device trees, vendor libraries,
+waveform blob (`.wbf`) and Lattice TCON firmware are Onyx's, are extracted by
+each user from their own device (see `INSTALL.md` step 3), and remain under
+whatever terms Onyx applies to them. Nothing above grants any right to them.
+
+Note also that the kernel is a modified Linux for which Onyx publishes no
+source, which is a GPL-2.0 violation on their part. That is a reason those
+binaries are not redistributed here, and it is not cured by anything in this
+repository.
+
+**Upstream projects.** Patches under `patches/` are diffs against AOSP. Applying
+them produces a derivative of AOSP, which is Apache-2.0 — our licence covers the
+patch text, not the resulting combined work.
+
+**Third-party work we learned from.** `THIRD_PARTY.md` records what was reused
+and under what terms, separating code (none copied), facts (constants and API
+semantics taken from others' documentation), and ideas (algorithms
+reimplemented). Those projects' licences — GPL-2.0 for the Rockchip EBC driver,
+GPL-3.0 for FBInk, AGPL-3.0 for KOReader, CERN-OHL-S for Modos Caster — apply to
+their work, not to ours, but they are credited because that reuse is real.

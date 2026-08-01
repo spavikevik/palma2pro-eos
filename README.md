@@ -107,3 +107,13 @@ The Fairphone-4-ABL swap is the step that bricks devices. Onyx sells no unbrick 
 and there is no public Palma 2 Pro firehose recovery package. EDL with a working loader is
 the entire safety net, so it gets verified — dump *and* restore — before ABL is touched.
 See `docs/02-unlock.md`.
+
+## Licence
+
+Code is dual licensed **Apache-2.0 OR MIT**; documentation under `docs/` is
+**CC BY-SA 4.0**. See [LICENSE](LICENSE).
+
+No Onyx binaries are included or licensed here — the kernel, vendor libraries,
+waveform blob and TCON firmware are extracted by each user from their own device
+(`INSTALL.md` step 3) and remain Onyx's. See [THIRD_PARTY.md](THIRD_PARTY.md)
+for what was reused from other projects and under what terms.

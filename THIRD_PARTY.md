@@ -5,6 +5,10 @@ deliberately rather than assembled at the end, because most of what was borrowed
 here is **knowledge** rather than code, and that is exactly the kind of reuse
 that tends to go unattributed.
 
+This project's own licence is **Apache-2.0 OR MIT** for code and
+**CC BY-SA 4.0** for `docs/` (see `LICENSE`). Nothing below changes that; these
+are other people's terms, recorded so the reuse is visible.
+
 Three categories, kept separate on purpose:
 
 * **Code** — source actually copied into this repository
