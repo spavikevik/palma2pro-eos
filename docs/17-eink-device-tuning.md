@@ -164,38 +164,34 @@ setprop persist.epdcshim.fullevery 12   # periodic full-flash clean, clears ghos
 
 `upd` is the difference between unusable and pleasant.
 
-## Runtime resource overlays: enabled is not the same as effective
+## Runtime resource overlays: priority is what matters
 
-Three RROs are built and installed from the device tree (`device/.../rro/`):
+Two RROs ship from the device tree (`device/.../rro/`):
 
 | overlay | target | status |
 |---|---|---|
-| `BlissLauncherEinkOverlay` | `foundation.e.blisslauncher` | enabled, effect unverified |
-| `DeskClockStaticIconOverlay` | `com.android.deskclock` | enabled, **not effective** |
-| `FrameworkEinkOverlay` | `android` | enabled, **not effective** |
+| `BlissLauncherEinkOverlay` | `foundation.e.blisslauncher` | **working** |
+| `FrameworkEinkOverlay` | `android` | enabled; wallpaper still applied via `/data` |
 
-All three report `[x]` in `cmd overlay list` and `STATE_ENABLED` in
-`cmd overlay dump`, and all three APKs demonstrably contain the right resources
-(`res/drawable-nodpi-v4/default_wallpaper.png`,
-`res/mipmap-anydpi-v26/ic_launcher.xml`). The wallpaper and the clock icon are
-nonetheless unchanged on the device.
+They were originally written at manifest `priority="1"` and did nothing at all,
+while reporting `STATE_ENABLED` throughout. The cause was **not** overlayable
+policy and **not** caching, both of which were investigated and ruled out. /e/OS
+ships `foundation.e.blisslauncher.overlay` at priority **100**; overlays apply in
+priority order and the last one wins, so ours was applied first and then
+overwritten. Nothing is logged when that happens.
 
-So on this build **an RRO reporting enabled does not mean its resources are
-being substituted**, and neither `cmd overlay dump` nor logcat says otherwise --
-there is no rejection logged anywhere. Two dead ends ruled out along the way:
+Ours now declares 1000, and it works.
 
-* not caching -- clearing the launcher's `app_icons.db` and deleting
-  `wallpaper_info.xml` changed nothing
-* not resource qualifiers -- `mipmap-anydpi-v26` beats every density bucket and
-  the override was moved there, and the wallpaper RRO applies on top of the
-  finished `framework-res` so build-time overlay ordering cannot matter
+That discovery also produced a much smaller fix for the live clock. Upstream
+Launcher3 ships `clock_component_name` **empty**, meaning no dynamic clock;
+/e/OS turns it on through their overlay by pointing it at
+`com.android.deskclock`, which routes the icon through `ClockDrawableWrapper` and
+makes it tick once a second. Setting the string back to empty in our overlay is
+the entire fix -- no override of DeskClock's own icon, no source patch, and the
+app keeps its normal static icon.
 
-The most likely remaining explanation is `overlayable` policy: since Android 10
-a target can restrict which of its resources an overlay may replace, and
-`default_wallpaper` is not declared overlayable in `frameworks/base`. Confirming
-that, and finding whether a signature-policy or `PRODUCT_ENFORCE_RRO` change is
-needed, is unfinished work -- each attempt costs a ~45 minute build cycle, so it
-wants a hypothesis before the next one, not another guess.
+Measured after: **0 EPD refreshes per 10 s at idle** on the launcher, down from
+~9, and the Clock icon renders as the static face.
 
 ## What is actually applied today
 
@@ -209,8 +205,9 @@ wants a hypothesis before the next one, not another guess.
 
 ## Known remaining
 
-* The Clock icon is still a live analog clock; its second hand sweeps ~30x50 px
-  once a second and each tick costs a full-panel refresh. It is the entire
-  reason idle sits at ~9 refreshes per 10 s instead of 0. Per-layer damage
-  (`docs/15`) makes it cheap regardless of whether the icon is ever made static.
-* The white wallpaper is applied at runtime, not shipped by the build.
+* The white wallpaper is applied at runtime (`/data`), not shipped by the build.
+  The framework RRO is enabled but the wallpaper still comes from the `/data`
+  copy; worth revisiting whether `default_wallpaper` is reachable by an overlay
+  at all.
+* Snappiness is still capped by full-panel updates, not by waveform choice.
+  Per-layer damage (`docs/15`) is the structural fix.
