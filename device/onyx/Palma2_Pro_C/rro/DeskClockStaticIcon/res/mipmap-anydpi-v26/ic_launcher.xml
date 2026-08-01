@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DeskClock ships its launcher icon as an adaptive icon under mipmap-anydpi-v26.
+  That qualifier outranks any density bucket, so overriding only mipmap-xxhdpi
+  silently did nothing: the adaptive icon kept winning and the clock kept
+  ticking.
+
+  Overriding here with a PLAIN BITMAP is the point. Launcher3's
+  ClockDrawableWrapper only takes over when the icon is an AdaptiveIconDrawable
+  whose layers match the indices DeskClock's manifest metadata names; given a
+  flat bitmap it cannot, and falls back to a static icon.
+-->
+<bitmap xmlns:android="http://schemas.android.com/apk/res/android"
+    android:src="@mipmap/eink_clock_static" />

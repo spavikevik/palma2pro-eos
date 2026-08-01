@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="android.eink">
+    <!--
+      Wallpaper as a RUNTIME overlay rather than a build-time one.
+
+      device/onyx/.../overlay/ is a static overlay merged into framework-res at
+      build time, and vendor/lineage supplies its own default_wallpaper the same
+      way. Whichever is applied last wins, and lineage's did, so the white
+      wallpaper never reached the device no matter which density bucket it was
+      placed in. An RRO is applied on top of the finished framework-res, so it
+      wins regardless of build-time ordering.
+    -->
+    <overlay android:targetPackage="android"
+             android:isStatic="true"
+             android:priority="99" />
+    <application android:hasCode="false" />
+</manifest>
