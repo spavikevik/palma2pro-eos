@@ -262,6 +262,19 @@ every frame. Instrument per layer, by name.
 
 ---
 
+## 9b. Worth reading alongside
+
+`docs/18-refresh-algorithms.md` surveys how other open e-ink projects solve the
+layer above yours: KOReader classifies every update by *intent* rather than
+inspecting content, Modos Caster switches to a fast waveform while pixels are
+moving and re-renders in greyscale once they settle, and the Rockchip EBC driver
+tracks per-pixel waveform state across frames.
+
+The relevant idea for this task: once damage is per-layer, the natural next step
+is a per-layer *mode hint* travelling with each rectangle. The IME is always
+low-fidelity, a photo viewer is always high-fidelity, and the layer knows which
+it is while the shim can only guess.
+
 ## 10. Done means
 
 * the Clock second hand refreshes roughly its own icon, not the panel
