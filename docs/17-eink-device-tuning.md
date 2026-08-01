@@ -124,9 +124,53 @@ setprop persist.epdcshim.fullevery 12   # periodic full-flash clean, clears ghos
 
 `upd` is the difference between unusable and pleasant.
 
+## Runtime resource overlays: enabled is not the same as effective
+
+Three RROs are built and installed from the device tree (`device/.../rro/`):
+
+| overlay | target | status |
+|---|---|---|
+| `BlissLauncherEinkOverlay` | `foundation.e.blisslauncher` | enabled, effect unverified |
+| `DeskClockStaticIconOverlay` | `com.android.deskclock` | enabled, **not effective** |
+| `FrameworkEinkOverlay` | `android` | enabled, **not effective** |
+
+All three report `[x]` in `cmd overlay list` and `STATE_ENABLED` in
+`cmd overlay dump`, and all three APKs demonstrably contain the right resources
+(`res/drawable-nodpi-v4/default_wallpaper.png`,
+`res/mipmap-anydpi-v26/ic_launcher.xml`). The wallpaper and the clock icon are
+nonetheless unchanged on the device.
+
+So on this build **an RRO reporting enabled does not mean its resources are
+being substituted**, and neither `cmd overlay dump` nor logcat says otherwise --
+there is no rejection logged anywhere. Two dead ends ruled out along the way:
+
+* not caching -- clearing the launcher's `app_icons.db` and deleting
+  `wallpaper_info.xml` changed nothing
+* not resource qualifiers -- `mipmap-anydpi-v26` beats every density bucket and
+  the override was moved there, and the wallpaper RRO applies on top of the
+  finished `framework-res` so build-time overlay ordering cannot matter
+
+The most likely remaining explanation is `overlayable` policy: since Android 10
+a target can restrict which of its resources an overlay may replace, and
+`default_wallpaper` is not declared overlayable in `frameworks/base`. Confirming
+that, and finding whether a signature-policy or `PRODUCT_ENFORCE_RRO` change is
+needed, is unfinished work -- each attempt costs a ~45 minute build cycle, so it
+wants a hypothesis before the next one, not another guess.
+
+## What is actually applied today
+
+| setting | how | survives |
+|---|---|---|
+| navigation bar | `qemu.hw.mainkeys=0` in `device.mk` | reboot (needs a full image build to reach `build.prop`; appended by hand meanwhile) |
+| client composition | `system/etc/init/epdc-clientcomp.rc` | reboot |
+| animations off | SettingsProvider defaults overlay | wipe |
+| white wallpaper | image written to `/data/system/users/0/wallpaper`, then `wallpaper_info.xml` deleted so the colour hints are recomputed | reboot, **not** a wipe |
+| light theme | `cmd uimode night no` | reboot |
+
 ## Known remaining
 
-* The Clock icon is drawn as a live analog clock; its second hand sweeps ~30x50
-  px once a second and currently costs a full-panel refresh. Fixing this
-  properly is the per-layer damage task (`docs/15`).
-* /e/OS's colourful default wallpaper still ships; white is applied at runtime.
+* The Clock icon is still a live analog clock; its second hand sweeps ~30x50 px
+  once a second and each tick costs a full-panel refresh. It is the entire
+  reason idle sits at ~9 refreshes per 10 s instead of 0. Per-layer damage
+  (`docs/15`) makes it cheap regardless of whether the icon is ever made static.
+* The white wallpaper is applied at runtime, not shipped by the build.
