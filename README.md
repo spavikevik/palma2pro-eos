@@ -3,6 +3,17 @@
 Porting /e/OS to the Onyx Boox Palma 2 Pro (OPC1410R) to get off the stock firmware
 and its telemetry to Chinese servers.
 
+## Start here
+
+| | |
+|---|---|
+| **[MANUAL.md](MANUAL.md)** | operator's manual: the hardware, how a pixel reaches the panel, the `/dev/ebc` API, what we added, the debugging playbook, and the traps |
+| **[THIRD_PARTY.md](THIRD_PARTY.md)** | what was reused from other projects, and under what licence |
+| [docs/16](docs/16-build-flash-test.md) | build, flash and test workflow |
+| [docs/17](docs/17-eink-device-tuning.md) | e-ink device tuning, with the reasoning |
+| [docs/18](docs/18-refresh-algorithms.md) | how other open e-ink projects do refresh |
+| [docs/15](docs/15-task-per-layer-damage.md) | the open task: per-layer damage |
+
 ## Device
 
 | | |
