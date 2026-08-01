@@ -15,6 +15,7 @@ and its telemetry to Chinese servers.
 | [docs/17](docs/17-eink-device-tuning.md) | e-ink device tuning, with the reasoning |
 | [docs/18](docs/18-refresh-algorithms.md) | how other open e-ink projects do refresh |
 | [docs/15](docs/15-task-per-layer-damage.md) | the open task: per-layer damage |
+| [docs/20](docs/20-history-and-method.md) | how this port happened, the routes that failed, and the method |
 
 ## Device
 
