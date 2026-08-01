@@ -1,0 +1,15 @@
+// Runtime resource overlay: e-ink tuning for the /e/OS launcher.
+//
+// BlissLauncher ships as a prebuilt APK (external/prebuiltapks/BlissLauncher3),
+// so its source cannot be patched. An RRO overrides its resources at runtime
+// without touching or redistributing the APK.
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+runtime_resource_overlay {
+    name: "BlissLauncherEinkOverlay",
+    theme: "BlissLauncherEink",
+    sdk_version: "current",
+    product_specific: true,
+}

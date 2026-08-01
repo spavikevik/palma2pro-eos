@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="foundation.e.blisslauncher.eink">
+    <!-- targetPackage is the launcher's real package name, which is
+         foundation.e.blisslauncher - NOT foundation.e.blisslauncher3, which is
+         only what the prebuilt directory and the privapp allowlist are called. -->
+    <overlay android:targetPackage="foundation.e.blisslauncher"
+             android:isStatic="true"
+             android:priority="1" />
+    <application android:hasCode="false" />
+</manifest>

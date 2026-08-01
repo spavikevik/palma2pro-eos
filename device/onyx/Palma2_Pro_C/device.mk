@@ -182,3 +182,22 @@ DEVICE_PACKAGE_OVERLAYS += $(DEVICE_PATH)/overlay
 # inherit-product-if-exists, not inherit-product: deleting bringup-debug.mk is
 # the whole revert, with no edit needed here.
 $(call inherit-product-if-exists, $(DEVICE_PATH)/bringup-debug.mk)
+
+# --- e-ink tuning ----------------------------------------------------------
+#
+# Runtime resource overlays. Both targets are prebuilt APKs whose source is not
+# in this tree, so an RRO is the only way to change their resources without
+# modifying or redistributing the APK itself. See docs/17.
+PRODUCT_PACKAGES += \
+    BlissLauncherEinkOverlay \
+    DeskClockStaticIconOverlay
+
+# The navigation bar does not exist AT ALL without this: config_showNavigationBar
+# is false for this device, and PhoneWindowManager treats "0" here as an explicit
+# override that forces the bar on. It is read once, before WindowManager starts,
+# so a runtime setprop needs a framework restart and does not survive a reboot.
+#
+# Gesture navigation is a poor fit on e-ink regardless -- gestures imply
+# animation, and animation is what costs panel refreshes.
+PRODUCT_PROPERTY_OVERRIDES += \
+    qemu.hw.mainkeys=0

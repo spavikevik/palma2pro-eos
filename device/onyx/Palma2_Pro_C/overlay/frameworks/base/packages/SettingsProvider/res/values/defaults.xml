@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  E-ink defaults.
+
+  Animation is unusually expensive on this panel: refresh cost is proportional
+  to the AREA repainted, not to how much of it changed, so every animation frame
+  costs a panel refresh. Measured on the launcher, idle, with no input:
+  animations on gave 10-13 EPD refreshes per 10 s; off gave zero.
+
+  These were previously applied by hand with `settings put global ...`, which
+  survives a reboot but not a wipe. Setting the defaults here makes a freshly
+  provisioned device behave correctly.
+-->
+<resources>
+    <fraction name="def_window_animation_scale">0%</fraction>
+    <fraction name="def_window_transition_scale">0%</fraction>
+</resources>

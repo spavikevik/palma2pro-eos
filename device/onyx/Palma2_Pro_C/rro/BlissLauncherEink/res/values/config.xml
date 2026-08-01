@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Launcher animation durations, cut for e-ink.
+
+  These are Launcher3 resources that BlissLauncher inherits, and they are NOT
+  covered by the global animation scales: those scale window and transition
+  animations, while these are the launcher's own internal animators.
+
+  Page snapping is deliberately shortened rather than removed. An instant jump
+  loses the sense of direction between pages; ~120 ms keeps that cue while
+  costing far fewer panel refreshes than the stock ~750 ms sweep.
+
+  Everything that is pure decoration - carets, tooltips, drag outlines, search
+  hints - goes to zero: on this panel each of those frames is a full refresh
+  and none of them carry information.
+-->
+<resources>
+    <!-- kept short, not zero: preserves the direction cue when changing page -->
+    <integer name="config_pageSnapAnimationDuration">120</integer>
+
+    <!-- opening surfaces: short enough to feel immediate, long enough to show
+         which direction the surface came from -->
+    <integer name="config_allAppsOpenDuration">100</integer>
+    <integer name="config_allAppsCloseDuration">100</integer>
+    <integer name="config_bottomSheetOpenDuration">100</integer>
+    <integer name="config_bottomSheetCloseDuration">100</integer>
+    <integer name="config_materialFolderExpandDuration">100</integer>
+
+    <!-- decoration only: no information conveyed, so no refreshes spent -->
+    <integer name="config_caretAnimationDuration">0</integer>
+    <integer name="config_searchHintAnimationDuration">0</integer>
+    <integer name="config_tooltipAnimTime">0</integer>
+    <integer name="config_dragOutlineFadeTime">0</integer>
+
+    <!-- dropping an icon: keep it brief but not instant, so the icon is seen to
+         land where it was dropped -->
+    <integer name="config_dropAnimMinDuration">80</integer>
+    <integer name="config_dropAnimMaxDuration">120</integer>
+
+    <!-- delay before a folder opens on hover; no animation, just waiting -->
+    <integer name="config_folderDelay">200</integer>
+</resources>
