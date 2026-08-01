@@ -3,6 +3,30 @@
 Porting /e/OS to the Onyx Boox Palma 2 Pro (OPC1410R) to get off the stock firmware
 and its telemetry to Chinese servers.
 
+## Scope and disclaimer
+
+This is independent interoperability work on hardware the authors own. It is not
+affiliated with, endorsed by, or supported by Onyx International (Boox),
+e Foundation, Fairphone, Qualcomm or Google. Product names and trademarks belong
+to their respective owners.
+
+**No proprietary binaries are distributed here.** The kernel, vendor libraries,
+waveform data and TCON firmware remain Onyx's; `INSTALL.md` requires you to
+extract them from your own device. Onyx has published no corresponding source
+for the modified Linux kernel this device ships, which is a further reason none
+of it is mirrored in this repository.
+
+Disassembly was used only to determine the interfaces needed to make an
+independently written display stack work with this hardware — ioctl numbers,
+struct layouts, register values. Those are facts about an interface, and this
+repository contains no code copied from Onyx.
+
+**This will void your warranty and can permanently break your device.** Unlocking
+the bootloader wipes `/data` unconditionally, and incorrect EPD power sequencing
+or waveform data can damage the panel. There is no warranty of any kind — see
+`LICENSE`. You are responsible for what you run on your own hardware, and for
+your own jurisdiction's rules.
+
 ## Start here
 
 New here? **[docs/20 — how this port happened](docs/20-history-and-method.md)** is

@@ -62,3 +62,32 @@ semantics taken from others' documentation), and ideas (algorithms
 reimplemented). Those projects' licences — GPL-2.0 for the Rockchip EBC driver,
 GPL-3.0 for FBInk, AGPL-3.0 for KOReader, CERN-OHL-S for Modos Caster — apply to
 their work, not to ours, but they are credited because that reuse is real.
+
+---
+
+## Reverse engineering: purpose and limits
+
+Recorded so the intent is unambiguous.
+
+The disassembly in this project served one purpose: determining the interfaces
+required to make independently written software interoperate with this device's
+display hardware. What was recovered is **interface information** — ioctl command
+numbers, structure layouts and field offsets, DRM property names, register and
+GPIO assignments, panel timings. `docs/19` is the resulting specification and
+`docs/20` records how it was obtained.
+
+Concretely, and verifiably from the tree:
+
+* **no code was copied** from Onyx or any other proprietary source; every file
+  under `src/` was written for this project
+* **no proprietary binary is distributed**; the kernel and blobs were removed
+  from git history before this repository was published anywhere, and each user
+  extracts their own under `INSTALL.md` step 3
+* techniques originating with others — notably the bootloader unlock — are
+  credited to their authors in `THIRD_PARTY.md` rather than presented as ours
+
+Nothing here is a legal opinion. Interoperability provisions differ by
+jurisdiction, and anyone intending to redistribute images, ship a product, or
+otherwise go beyond running this on their own hardware should take their own
+advice first. That step would also mean distributing material this repository
+deliberately does not.

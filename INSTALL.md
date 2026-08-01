@@ -16,6 +16,10 @@ Complete reproduction: unlock, back up, build, flash, boot.
 >
 > This is a port in progress, not a product. Read "Current limitations" at the
 > bottom before deciding to install it.
+>
+> This procedure is for hardware **you own**. It voids the warranty, and the
+> blobs in step 3 come from your own device because none are distributed here.
+> See the scope note in `README.md`.
 
 ---
 
