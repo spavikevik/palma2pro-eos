@@ -164,12 +164,48 @@ Sources: [Modos-Labs/Glider](https://github.com/Modos-Labs/Glider),
 
 ---
 
+## 4b. Settings that actually look good on this panel
+
+Arrived at empirically, after testing the alternatives above:
+
+```sh
+setprop persist.epdcshim.wf        2        # GC16. AUTO (0) and PART_GL16 (8) both looked worse
+setprop persist.epdcshim.fastwf    0        # no motion mode: PART_GL16 while moving was bad
+setprop persist.epdcshim.upd       0        # partial, not flashing
+setprop persist.epdcshim.flag      0x31000  # stock's value; 0x21000 washes the panel out
+setprop persist.epdcshim.settlems  400      # quality pass once the screen goes quiet
+setprop persist.epdcshim.settlewf  2
+setprop persist.epdcshim.fullevery 0        # superseded by the settle pass
+setprop persist.epdcshim.interval  120
+```
+
+Verdict from use: icons properly visible, ghosting acceptable, refresh count
+well down -- but **still not snappy**, and no waveform tuning will fix that.
+Every update is full-panel, 1.36M pixels for any change, because SurfaceFlinger
+publishes one coarse damage rectangle. Waveform choice sets the cost *per*
+update; only per-layer damage (`docs/15`) reduces the *area*, and that is the
+structural fix.
+
 ## 5. What this means for us, concretely
 
 Ordered by value against effort, given where `epdcshim` and the damage work are.
 
-**a. Try `EPD_AUTO` (logical mode 0).** One `setprop`. The driver may already do
-histogram-style selection better than our fixed `wf 2`. Untested and free.
+**a. `EPD_AUTO` (logical mode 0) -- TRIED, REJECTED.** The driver accepts it
+without complaint, but the result is visibly worse: heavy ghosting and poor
+quality against a fixed `wf 2` (GC16). Whatever selection it performs, it is not
+the i.MX-style histogram analysis FBInk describes, or the panel's mode table
+maps mode 0 to something else entirely. Do not spend more time on it.
+
+**a2. The flag was wrong all along -- FIXED.** We had been sending
+`flags = 0x21000`; Onyx's own SurfaceFlinger uses **`0x31000`**, which was
+visible in the very first trace we captured and then not acted on. With
+`0x21000` icons were washed out and barely visible; `0x31000` restores proper
+contrast. The `0x10000` bit is not decoded, but stock's value is the right
+default and is now what `persist.epdcshim.flag` defaults to in practice.
+
+Lesson worth keeping: when a captured stock value and a guessed value differ,
+the guess needs a reason. This one cost several rounds of chasing "ghosting"
+that was really a drive-voltage problem.
 
 **b. Settle pass -- IMPLEMENTED.** `persist.epdcshim.settlems` /
 `settlewf`. A timer thread in the shim watches for the screen going quiet and
