@@ -254,7 +254,15 @@ static void settle_now(void)
     u.rect[0] = 0; u.rect[1] = 0; u.rect[2] = PANEL_W; u.rect[3] = PANEL_H;
     u.waveform_mode = t_settlewf;
     u.update_mode   = 1;          /* a settle is deliberately the full pass */
-    u.update_marker = 1;
+    /* Markers MUST be unique. The driver tracks them and blocks in
+     * onyx_epdc_fb_wait_updates_complete() until the marker it is waiting on
+     * completes; sending the same marker every time made each settle collide
+     * with the previous one, which left the panel mid-waveform and BLANK. The
+     * symptom was 'Waiting for update marker magic[1] complete' repeating
+     * forever in dmesg. */
+    static i32 marker;
+    if (++marker <= 0) marker = 1;
+    u.update_marker = marker;
     u.flag          = t_flag;
     p_ioctl(fd, EBC_SEND_UPDATE, &u);
     if (p_close) p_close(fd);
@@ -398,6 +406,8 @@ static void refresh_tunables(void)
     t_fastms   = (int)prop_num("persist.epdcshim.fastms", 250);
     t_fullevery= (int)prop_num("persist.epdcshim.fullevery", 0);
     t_skipsame = (int)prop_num("persist.epdcshim.skipsame", 1);
+    /* Default is longer than a GC16 takes (~450 ms). A shorter window lets a
+     * settle land inside an update that is still running. */
     t_settlems = (int)prop_num("persist.epdcshim.settlems", 0);
     t_settlewf = (int)prop_num("persist.epdcshim.settlewf", 2);
 }
