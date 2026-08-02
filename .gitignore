@@ -36,3 +36,6 @@ device/onyx/*/prebuilt/
 
 # Build logs are transient; the useful ones get quoted into docs/ instead.
 *.log
+
+# Pinned per machine, and tied to an address we do not commit.
+build/ssh/known_hosts
