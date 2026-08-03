@@ -55,4 +55,9 @@
       own icon, and no source patch. The app keeps its normal static icon.
     -->
     <string name="clock_component_name" translatable="false"></string>
+    <!-- Wallpaper blur is a per-frame CPU stack blur, not a GPU effect. On this
+         panel it held the launcher at 46-61% CPU and posted ~63 full-screen
+         damage buffers a second while idle, which on e-ink also means constant
+         panel refreshes. Every refresh here costs real time and power. -->
+    <bool name="config_enable_wallpaper_blur">false</bool>
 </resources>

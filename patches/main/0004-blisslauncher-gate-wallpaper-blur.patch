@@ -1,0 +1,62 @@
+diff --git a/bliss/res/values/blur_config.xml b/bliss/res/values/blur_config.xml
+new file mode 100644
+index 0000000000..d6f2ae0e47
+--- /dev/null
++++ b/bliss/res/values/blur_config.xml
+@@ -0,0 +1,7 @@
++<?xml version="1.0" encoding="utf-8"?>
++<resources>
++    <!-- Wallpaper blur is a per-frame CPU stack blur. True keeps the stock
++         look; false is for devices that cannot afford it (e-ink, low power).
++         Overridable by RRO. -->
++    <bool name="config_enable_wallpaper_blur">true</bool>
++</resources>
+diff --git a/bliss/src/foundation/e/bliss/blur/BlurBackgroundView.kt b/bliss/src/foundation/e/bliss/blur/BlurBackgroundView.kt
+index b1938cb441..9911db983b 100644
+--- a/bliss/src/foundation/e/bliss/blur/BlurBackgroundView.kt
++++ b/bliss/src/foundation/e/bliss/blur/BlurBackgroundView.kt
+@@ -23,21 +23,41 @@ import android.graphics.Rect
+ import android.util.AttributeSet
+ import android.view.View
+ import com.android.launcher3.Insettable
++import com.android.launcher3.R
+ import foundation.e.bliss.blur.OffsetParent.OffsetParentDelegate
+ 
+ class BlurBackgroundView(context: Context, attrs: AttributeSet?) :
+     View(context, attrs), Insettable, BlurWallpaperProvider.Listener, OffsetParent {
+ 
++    /*
++     * Wallpaper blur is a per-frame CPU stack blur (see StackBlur.kt), not a GPU
++     * effect. On a device where it is not wanted it costs a great deal for
++     * nothing: measured on an e-ink Boox Palma 2 Pro it held the launcher at
++     * 46-61% CPU and posted ~63 full-screen-damage buffers a second while the
++     * home screen sat idle, because BlurViewDelegate re-invalidates the view
++     * from the drawable callback on every frame.
++     *
++     * Gated rather than removed: it is the intended look on a normal display.
++     * Devices that cannot afford it set config_enable_wallpaper_blur to false.
++     * When disabled the delegate is never constructed, so none of its listeners
++     * are registered and the invalidate loop cannot start.
++     */
++    private val blurEnabled =
++        context.resources.getBoolean(R.bool.config_enable_wallpaper_blur)
++
+     private val mBlurDelegate =
+-        BlurViewDelegate(this, BlurWallpaperProvider.blurConfigBackground, null)
++        if (blurEnabled)
++            BlurViewDelegate(this, BlurWallpaperProvider.blurConfigBackground, null)
++        else null
++
+     private val offsetParentDelegate = OffsetParentDelegate()
+ 
+     init {
+-        setWillNotDraw(false)
++        setWillNotDraw(!blurEnabled)
+     }
+ 
+     override fun onDraw(canvas: Canvas) {
+-        mBlurDelegate.draw(canvas)
++        mBlurDelegate?.draw(canvas)
+     }
+ 
+     override fun setInsets(insets: Rect) {}
