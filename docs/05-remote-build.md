@@ -24,6 +24,7 @@ For contrast, the numbers that mattered: `soong_build` peaked at **23 GB** and
 | `build/ssh/sshd_config` | key-only, no forwarding, no root |
 | `build/ssh/entrypoint.sh` | validates, then starts sshd; fails closed |
 | `build/ssh/builder.env` | host/port/key/tree/lunch + env overrides |
+| `build/ssh/builder.env.local` | your machine's address; gitignored, copy from `.example` |
 | `build/ssh/known_hosts` | pinned host key |
 | `scripts/builder.sh` | the only thing you invoke |
 | `scripts/sync-to-builder.sh` | pushes our work (not the AOSP tree) |

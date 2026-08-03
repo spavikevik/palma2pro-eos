@@ -39,3 +39,4 @@ device/onyx/*/prebuilt/
 
 # Pinned per machine, and tied to an address we do not commit.
 build/ssh/known_hosts
+build/ssh/builder.env.local

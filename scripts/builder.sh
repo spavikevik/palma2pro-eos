@@ -21,6 +21,17 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Local overrides, sourced FIRST so builder.env's ${VAR:-default} pattern picks
+# them up. Gitignored: it holds your builder's address, which is machine
+# specific and deliberately not committed. Copy builder.env.local.example.
+#
+# Precedence is  exported var > builder.env.local > builder.env, but only
+# because every one of those files assigns with ${VAR:-default}. A plain
+# assignment anywhere in the chain silently wins over the environment.
+if [ -f "$HERE/build/ssh/builder.env.local" ]; then
+    # shellcheck disable=SC1091
+    . "$HERE/build/ssh/builder.env.local"
+fi
 # shellcheck source=../build/ssh/builder.env
 . "$HERE/build/ssh/builder.env"
 KNOWN_HOSTS="$HERE/build/ssh/known_hosts"
