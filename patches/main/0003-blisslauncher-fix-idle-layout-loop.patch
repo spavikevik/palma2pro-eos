@@ -1,0 +1,31 @@
+diff --git a/bliss/src/foundation/e/bliss/widgets/WidgetContainer.kt b/bliss/src/foundation/e/bliss/widgets/WidgetContainer.kt
+index 0637d377a0..1f5c6a3ee1 100644
+--- a/bliss/src/foundation/e/bliss/widgets/WidgetContainer.kt
++++ b/bliss/src/foundation/e/bliss/widgets/WidgetContainer.kt
+@@ -685,9 +685,24 @@ class WidgetContainer(context: Context, attrs: AttributeSet?) :
+ 
+                     val maxHeight = totalHeight.maxOrNull() ?: 0
+                     val padding = recyclerView.paddingTop + recyclerView.paddingBottom
++                    val newHeight = maxHeight + padding
+                     val layoutParams = recyclerView.layoutParams
+-                    layoutParams.height = maxHeight + padding
+-                    recyclerView.layoutParams = layoutParams
++                    // Only assign when the height actually changes. Assigning
++                    // layoutParams ALWAYS calls requestLayout(), even when the
++                    // value is identical, and this runs from an
++                    // OnGlobalLayoutListener -- so an unconditional assignment
++                    // schedules the layout pass that re-invokes this listener,
++                    // which assigns again. It never converges.
++                    //
++                    // Measured on a Boox Palma 2 Pro before this guard: a full
++                    // measure/layout/draw of the workspace ~31 times a second
++                    // with the home screen idle, 46-61% CPU, and ~124 new
++                    // full-surface buffers a second. On e-ink every one of
++                    // those is also a panel refresh.
++                    if (layoutParams.height != newHeight) {
++                        layoutParams.height = newHeight
++                        recyclerView.layoutParams = layoutParams
++                    }
+                 }
+             }
+         }
