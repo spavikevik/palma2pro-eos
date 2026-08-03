@@ -201,14 +201,24 @@ device's own firmware (`docs/03`):
 | value | name | notes |
 |---|---|---|
 | 0 | `EPD_AUTO` | **[V] tried, rejected** — heavy ghosting, worse than fixed GC16 |
-| 1 | `EPD_OVERLAY` | |
-| **2** | **`EPD_FULL_GC16`** | 16-level, clean. What Onyx uses; our default |
-| 3 | `EPD_FULL_GL16` | |
-| 5 | `EPD_FULL_GLD16` | |
-| 6 | `EPD_FULL_GCC16` | |
-| 8 | `EPD_PART_GL16` | **[V]** looked worse here, steady-state and as a motion mode |
-| 12 | `EPD_A2` | binary, fastest |
-| 14 | `EPD_RESET` | |
+| 1 | `EPD_OVERLAY` | **[V] accepted, ~4x faster than GC16 — but ADDITIVE.** Drives pixels one way only, so previous frames stay on the panel. Correct for pen/ink overlay, unusable as a scrolling motion mode. |
+| **2** | **`EPD_FULL_GC16`** | **[V]** 16-level, clean. What Onyx uses; our default |
+| 3 | `EPD_FULL_GL16` | **[V] accepted, no speed gain over GC16** |
+| 5 | `EPD_FULL_GLD16` | untested |
+| 6 | `EPD_FULL_GCC16` | untested |
+| 8 | `EPD_PART_GL16` | **[V] REJECTED — produces no refresh at all.** Silently: no error, no log, panel simply does not update. |
+| 12 | `EPD_A2` | **[V] REJECTED — produces no refresh at all.** Silently. The mode every e-ink guide reaches for first; it does nothing on this panel. |
+| 14 | `EPD_RESET` | untested |
+
+Measured 2026-08-03 by sweeping `persist.epdcshim.wf` and counting the driver's
+own `waveform_clean_work_handler` lines, filtered by kernel timestamp, with a
+known-good control (`wf 2`) in every run. Throughput under continuous scrolling,
+4 s window, throttle removed: GC16 **1**, GL16 **1**, OVERLAY **4**.
+
+A rejected mode is indistinguishable from a hung compositor from the outside --
+the screen just stops updating. If the panel freezes after a tuning change, look
+here first. Two earlier entries in this table (`8` and `12`) were inferred from
+the mode names and were wrong; both are now measured.
 
 `update_mode` is a **separate axis**: flashing (repaint every pixel in the
 region) vs partial (drive only changed pixels). Cross-platform semantics of the
