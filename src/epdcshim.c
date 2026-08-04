@@ -98,8 +98,8 @@ struct upd {
     i32 update_mode;    /* +0x14                                            */
     i32 update_marker;  /* +0x18  incremented per submission                */
     i32 temp;           /* +0x1c  temperature index                         */
-    i32 flag;           /* +0x20  0x21000 is accepted by the driver         */
-    i32 reserved;       /* +0x24                                            */
+    i32 flag;           /* +0x20  0x31000 is what stock sends               */
+    i32 dither_mode;    /* +0x24  see below; we called this 'reserved'       */
 };
 _Static_assert(sizeof(struct upd) == 40, "kernel copies 8 x 40 bytes");
 
@@ -153,6 +153,17 @@ static int t_fullevery;   /* force a full-flash clean every N updates        */
 /* Flash every N frames while still moving, to bound how much trail the fast
  * waveform can accumulate mid-scroll. 0 = only clean when motion ends. */
 static int t_fastclean = 6;
+/* Temperature index. NXP's i.MX EPDC uapi -- which this struct is derived from,
+ * field for field -- defines TEMP_USE_AMBIENT as 0x1000, meaning "read the
+ * ambient sensor". A plain 0 there is not "driver decides", it is 0 degrees C:
+ * the coldest waveform band. E-ink waveforms are strongly temperature
+ * compensated, so sending 0 on a warm panel drives it with the wrong timings.
+ * Default stays 0 until this is confirmed on hardware. See docs/19 4.6. */
+static int t_temp;
+/* dither_mode, the field previously labelled 'reserved'. i.MX:
+ *   0 PASSTHROUGH (off)  1 FLOYD_STEINBERG  2 ATKINSON  3 ORDERED  4 QUANT_ONLY
+ * Hardware dithering, free of charge, if Onyx kept the semantics. */
+static int t_dither;
 /* update_mode for the end-of-motion clean. 1 = full drive (slow, ~600-900ms
  * on a full panel), 0 = partial. Whether a partial pass can lift what the
  * additive overlay laid down is an empirical question, not a known one. */
@@ -465,6 +476,8 @@ static void refresh_tunables(void)
     t_fastwf   = (int)prop_num("persist.epdcshim.fastwf", 0);
     t_fastms   = (int)prop_num("persist.epdcshim.fastms", 250);
     t_fastclean= (int)prop_num("persist.epdcshim.fastclean", 6);
+    t_temp     = (int)prop_num("persist.epdcshim.temp", 0);
+    t_dither   = (int)prop_num("persist.epdcshim.dither", 0);
     t_cleanmode= (int)prop_num("persist.epdcshim.cleanmode", 1);
     t_fullevery= (int)prop_num("persist.epdcshim.fullevery", 0);
     t_skipsame = (int)prop_num("persist.epdcshim.skipsame", 1);
@@ -585,8 +598,8 @@ static int init_parms(long dt_ms, const struct epdc_damage_rect *dmg, int n_dmg,
          * n_dmg was always 1; a latent blank-screen bug the moment it is not. */
         g_parms[i].update_marker = g_marker + i;
         g_parms[i].flag          = t_flag;
-        g_parms[i].temp          = 0;
-        g_parms[i].reserved      = 0;
+        g_parms[i].temp          = t_temp;
+        g_parms[i].dither_mode   = t_dither;
     }
     n = n ? n : 1;
     g_marker += n;

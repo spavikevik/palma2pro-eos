@@ -272,7 +272,21 @@ presents as a ghosting/quality problem. The `0x10000` bit is **not decoded**;
 `0x31000` is simply what stock does. `0x21000` returns rc=0 and `0x31000`
 returns rc=1148 from the ioctl, so the bit demonstrably changes behaviour.
 
-### 4.6 `temp` **[unknown]**
+### 4.6 `temp` **[unknown]** -- but see docs/22
+
+NXP's i.MX EPDC uapi, which this struct matches field for field, defines
+`TEMP_USE_AMBIENT = 0x1000`. That makes a plain `0` plausibly *0 degrees C* --
+the coldest waveform band -- rather than "driver decides". Now tunable via
+`persist.epdcshim.temp`; `4096` is accepted. Visual effect unconfirmed.
+
+The field at `+0x24` we recorded as `reserved` is i.MX's **`dither_mode`**
+(0 off, 1 Floyd-Steinberg, 2 Atkinson, 3 ordered, 4 quantise-only), now
+`persist.epdcshim.dither`.
+
+See `docs/22-kernel-driver-internals.md` for the driver's full ioctl surface,
+its sysfs debug controls, and the `extbuf` out-of-band image path.
+
+### 4.6.1 original note
 
 Waveforms are temperature-indexed and the driver exposes
 `onyx_epdc_fb_get_temp_index` / `onyx_epdc_read_temperature`. We send **0** in
