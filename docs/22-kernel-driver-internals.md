@@ -519,7 +519,29 @@ Both were hit while probing, both recoverable, both worth avoiding.
    over adb and needing a power cycle. Change one of these at a time, and expect
    to power-cycle when experimenting with Regal.
 
+3. **Probing with a non-zero payload corrupts display state.** Sweeping
+   unidentified commands with `4321` in slot 0 -- to find which one moved
+   `pwrdown_delay` -- left the panel rendering **inverted**, black for white.
+   `0x7014` (a `GAMMA_TAB` candidate) and `0x7026` (`enable cfa mode`) are the
+   likely culprits: garbage in a gamma table, or a colour-filter remap on a panel
+   with no colour filter, will both scramble the level mapping.
+
+   Recovered completely by a reboot. Driver state -- gamma, LUTs, `reagl_enable`,
+   `cfa` -- is **not** persistent, which makes reboot the reliable undo for
+   anything probing breaks.
+
+   Probe with **zero** unless there is a reason not to. A zero payload still
+   reaches the case and still gets logged, which is all the identification needs.
+
 And still: **never call `0x7000`**. It blocks forever.
+
+### 8.6.1 Commands known to change display state
+
+Identify these from the log, do not experiment with them casually:
+`0x7004` `LUT_ENABLE`, `0x700a` `reagl_enable`, `0x700b` `force_waveform`,
+`0x7014` (gamma candidate), `0x7026` `enable cfa mode`. Also `0x7018`
+`CAPTURE_SRART`, which allocates twelve capture buffers -- pair it with `0x701b`
+`CAPTURE_STOP`.
 
 ### 8.7 `pwrdown_delay` and `extbuf`: both dead ends via ioctl
 
