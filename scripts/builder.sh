@@ -179,10 +179,30 @@ build)
         if [ ! -f build/envsetup.sh ]; then
             echo 'no build/envsetup.sh -- the repo sync has not finished'; exit 1
         fi
+        # Leftover JVMs from a previously killed build hold their full heap and
+        # will starve this one before it starts. They are orphans -- their ninja
+        # is gone, so they can produce nothing -- but nothing reaps them.
+        if pgrep -x java >/dev/null; then
+            echo \"reaping \$(pgrep -cx java) orphaned JVMs from a previous build\"
+            pkill -x java 2>/dev/null || true
+            sleep 3
+            pkill -9 -x java 2>/dev/null || true
+        fi
         nohup $ENV_PREFIX bash -lc '
             cd $BUILDER_TREE
             source build/envsetup.sh >/dev/null
             lunch $BUILDER_LUNCH
+            # Cap the memory-hungry ninja pool (r8, d8, javac, turbine).
+            #
+            # A droid build died here with \"ninja failed with: signal: killed\"
+            # at 3%: the kernel OOM-killed it while 35 r8 JVMs were live, each
+            # started with -JXmx4096M. That is ~140 GB of heap ceiling against
+            # 46 GB of RAM. AOSP sizes this pool itself when the variable is
+            # unset, and its estimate is far too optimistic for this host.
+            #
+            # Ninja pools each job by its own accounting, so this only throttles
+            # the JVM-heavy steps; ordinary compilation keeps full parallelism.
+            export NINJA_HIGHMEM_NUM_JOBS=${HIGHMEM_JOBS:-6}
             m $target
         ' > $BUILD_LOG 2>&1 &
         echo \"build '$target' started, pid \$!\"
