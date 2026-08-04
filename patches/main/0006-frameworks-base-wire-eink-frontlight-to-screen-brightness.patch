@@ -1,5 +1,5 @@
 diff --git a/services/core/java/com/android/server/lights/LightsService.java b/services/core/java/com/android/server/lights/LightsService.java
-index 76cf1348d313..4cd4f076dec9 100644
+index 76cf1348d313..d5a32c5e2c2f 100644
 --- a/services/core/java/com/android/server/lights/LightsService.java
 +++ b/services/core/java/com/android/server/lights/LightsService.java
 @@ -32,6 +32,7 @@ import android.os.Looper;
@@ -18,7 +18,7 @@ index 76cf1348d313..4cd4f076dec9 100644
  import com.android.server.SystemService;
  
  import java.io.FileDescriptor;
-@@ -525,8 +527,113 @@ public class LightsService extends SystemService {
+@@ -525,8 +527,170 @@ public class LightsService extends SystemService {
          publishBinderService(Context.LIGHTS_SERVICE, mManagerService);
      }
  
@@ -90,10 +90,57 @@ index 76cf1348d313..4cd4f076dec9 100644
 +            epdcWriteSysfs(EPDC_BL_BRIGHTNESS, level);
 +
 +            // Warmth follows brightness to zero, so "off" is genuinely dark.
-+            final int warmth = SystemProperties.getInt("persist.sys.frontlight.warmth", 0);
++            final int warmth = epdcWarmthLevel(max);
 +            epdcWriteSysfs(EPDC_BL_WARMTH, level == 0 ? 0 : Math.max(0, Math.min(max, warmth)));
 +        } catch (Exception e) {
 +            // A frontlight that cannot be driven must never take down system_server.
++        }
++    }
++
++    /**
++     * Warmth level for the warm LED string, 0..max.
++     *
++     * Driven by Night Light, which already has exactly the control surface this needs and
++     * has nothing useful to do on a greyscale e-ink panel: a colour-temperature slider in
++     * Settings > Display and a Quick Settings tile. Its colour transform is invisible here,
++     * so the UI is otherwise idle, and "warmer" means the same thing to a user in both
++     * models. Reusing it gives a real, discoverable control with no new UI code, no custom
++     * tile and no extra app.
++     *
++     * Kelvin is inverted relative to warmth: the minimum colour temperature is the warmest
++     * setting, so it maps to the highest warm-LED level.
++     *
++     * When Night Light is off, warmth falls back to persist.sys.frontlight.warmth, which
++     * keeps the property working for scripting and preserves the previous behaviour.
++     */
++    private int epdcWarmthLevel(int max) {
++        try {
++            final android.content.ContentResolver cr = getContext().getContentResolver();
++            final boolean activated = android.provider.Settings.Secure.getInt(cr,
++                    android.provider.Settings.Secure.NIGHT_DISPLAY_ACTIVATED, 0) == 1;
++            if (!activated) {
++                return SystemProperties.getInt("persist.sys.frontlight.warmth", 0);
++            }
++            final int minK = getContext().getResources().getInteger(
++                    com.android.internal.R.integer.config_nightDisplayColorTemperatureMin);
++            final int maxK = getContext().getResources().getInteger(
++                    com.android.internal.R.integer.config_nightDisplayColorTemperatureMax);
++            final int defK = getContext().getResources().getInteger(
++                    com.android.internal.R.integer.config_nightDisplayColorTemperatureDefault);
++            int kelvin = android.provider.Settings.Secure.getInt(cr,
++                    android.provider.Settings.Secure.NIGHT_DISPLAY_COLOR_TEMPERATURE, defK);
++            if (maxK <= minK) {
++                return SystemProperties.getInt("persist.sys.frontlight.warmth", 0);
++            }
++            if (kelvin < minK) {
++                kelvin = minK;
++            } else if (kelvin > maxK) {
++                kelvin = maxK;
++            }
++            // Warmest Kelvin -> highest warm level.
++            return Math.round((float) (maxK - kelvin) * max / (maxK - minK));
++        } catch (Exception e) {
++            return SystemProperties.getInt("persist.sys.frontlight.warmth", 0);
 +        }
 +    }
 +
@@ -116,9 +163,19 @@ index 76cf1348d313..4cd4f076dec9 100644
 +                        epdcApplyFrontlight();
 +                    }
 +                };
-+        getContext().getContentResolver().registerContentObserver(
++        final android.content.ContentResolver cr = getContext().getContentResolver();
++        cr.registerContentObserver(
 +                android.provider.Settings.System.getUriFor(
 +                        android.provider.Settings.System.SCREEN_BRIGHTNESS),
++                false, observer, android.os.UserHandle.USER_ALL);
++        // Night Light drives warmth; watch both its switch and its slider.
++        cr.registerContentObserver(
++                android.provider.Settings.Secure.getUriFor(
++                        android.provider.Settings.Secure.NIGHT_DISPLAY_ACTIVATED),
++                false, observer, android.os.UserHandle.USER_ALL);
++        cr.registerContentObserver(
++                android.provider.Settings.Secure.getUriFor(
++                        android.provider.Settings.Secure.NIGHT_DISPLAY_COLOR_TEMPERATURE),
 +                false, observer, android.os.UserHandle.USER_ALL);
 +        // Apply once at boot so the panel matches the stored brightness.
 +        epdcApplyFrontlight();
