@@ -44,22 +44,62 @@ DEFAULT_W, DEFAULT_H = 824, 1648
 LEVELS = 16
 
 
+def sips_dimensions(path: Path):
+    out = subprocess.run(["sips", "-g", "pixelWidth", "-g", "pixelHeight", str(path)],
+                         check=True, capture_output=True, text=True).stdout
+    dims = {}
+    for line in out.splitlines():
+        k, _, v = line.strip().partition(": ")
+        if k in ("pixelWidth", "pixelHeight"):
+            dims[k] = int(v)
+    return dims["pixelWidth"], dims["pixelHeight"]
+
+
 def sips_prepare(src: Path, dst: Path, w: int, h: int) -> None:
-    """Scale to fit and pad to exactly w x h on white, via sips."""
-    # Longest side first, so the whole image fits inside the target box...
-    subprocess.run(["sips", "-Z", str(max(w, h)), str(src), "--out", str(dst)],
-                   check=True, capture_output=True)
-    # ...then pad the short axis. White, not black: an e-ink lock screen sits at
-    # rest for hours and white is the panel's zero-energy state.
-    subprocess.run(["sips", "--padToHeightWidth", str(h), str(w),
-                    "--padColor", "FFFFFF", str(dst), "--out", str(dst)],
-                   check=True, capture_output=True)
-    subprocess.run(["sips", "-s", "format", "png", str(dst), "--out", str(dst)],
+    """Scale and centre-crop to exactly w x h, covering the panel completely.
+
+    "Cover", not "fit". Fitting preserves the whole image and pads the short axis,
+    which on a lock screen means white bands down two edges -- and on e-ink those
+    bands are not subtle, because the panel holds them at full contrast for hours.
+    Covering fills the panel and loses the overflow instead.
+
+    Scale by whichever axis is short relative to the target, so the result is at
+    least w x h with aspect preserved, then take the middle. Resampling a single
+    axis is what keeps sips from distorting: --resampleHeightWidth would force
+    both and squash the image.
+    """
+    sw, sh = sips_dimensions(src)
+
+    subprocess.run(["sips", "-s", "format", "png", str(src), "--out", str(dst)],
                    check=True, capture_output=True)
 
+    # Compare aspect ratios with integer cross-multiplication -- no float
+    # rounding deciding which axis to drive.
+    if sw * h > sh * w:
+        # Source is proportionally wider: match the height, overflow the width.
+        subprocess.run(["sips", "--resampleHeight", str(h), str(dst), "--out", str(dst)],
+                       check=True, capture_output=True)
+    else:
+        subprocess.run(["sips", "--resampleWidth", str(w), str(dst), "--out", str(dst)],
+                       check=True, capture_output=True)
 
-def read_png(path: Path):
-    """Minimal PNG reader: 8-bit greyscale/RGB/RGBA, non-interlaced."""
+    # Centre crop. sips crops about the centre, which is the right default for
+    # artwork; anything smarter needs to know where the subject is.
+    subprocess.run(["sips", "--cropToHeightWidth", str(h), str(w), str(dst), "--out", str(dst)],
+                   check=True, capture_output=True)
+
+    cw, ch = sips_dimensions(dst)
+    if (cw, ch) != (w, h):
+        raise SystemExit(f"cover-crop produced {cw}x{ch}, wanted {w}x{h}")
+
+
+def read_png(path: Path, rgb: bool = False):
+    """Minimal PNG reader: 8-bit greyscale/RGB/RGBA, non-interlaced.
+
+    Returns (width, height, buf) where buf is one byte per pixel, or three when
+    rgb is set. Alpha is composited onto white either way, matching the panel's
+    rest state.
+    """
     data = path.read_bytes()
     if data[:8] != b"\x89PNG\r\n\x1a\n":
         raise ValueError("not a PNG")
@@ -82,7 +122,8 @@ def read_png(path: Path):
 
     raw = zlib.decompress(bytes(idat))
     stride = width * channels
-    out = bytearray(width * height)
+    outch = 3 if rgb else 1
+    out = bytearray(width * height * outch)
     prev = bytearray(stride)
     p = 0
     for y in range(height):
@@ -90,62 +131,84 @@ def read_png(path: Path):
         p += 1
         line = bytearray(raw[p:p + stride])
         p += stride
-        # Undo the per-scanline filter (PNG spec 9.2).
-        for i in range(stride):
-            a = line[i - channels] if i >= channels else 0
-            b = prev[i]
-            c = prev[i - channels] if i >= channels else 0
-            x = line[i]
-            if ftype == 1:
-                x += a
-            elif ftype == 2:
-                x += b
-            elif ftype == 3:
-                x += (a + b) >> 1
-            elif ftype == 4:
-                pa, pb, pc = abs(b - c), abs(a - c), abs(a + b - 2 * c)
-                x += a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
-            line[i] = x & 0xFF
+        # Undo the per-scanline filter (PNG spec 9.2). Filter 0 is a straight
+        # copy; skipping the byte loop for it matters here because a full-panel
+        # RGB image is four million bytes and this is pure Python.
+        if ftype != 0:
+            for i in range(stride):
+                a = line[i - channels] if i >= channels else 0
+                b = prev[i]
+                c = prev[i - channels] if i >= channels else 0
+                x = line[i]
+                if ftype == 1:
+                    x += a
+                elif ftype == 2:
+                    x += b
+                elif ftype == 3:
+                    x += (a + b) >> 1
+                elif ftype == 4:
+                    pa, pb, pc = abs(b - c), abs(a - c), abs(a + b - 2 * c)
+                    x += a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
+                line[i] = x & 0xFF
         prev = line
-        # Rec. 709 luma. Alpha is composited onto white, matching the padding.
+
         for x in range(width):
             o = x * channels
             if channels == 1:
-                v = line[o]
+                r = g = b = line[o]
+                alpha = 255
             elif channels == 2:
-                v, alpha = line[o], line[o + 1]
-                v = (v * alpha + 255 * (255 - alpha)) // 255
+                r = g = b = line[o]
+                alpha = line[o + 1]
             else:
-                v = (line[o] * 299 + line[o + 1] * 587 + line[o + 2] * 114) // 1000
-                if channels == 4:
-                    alpha = line[o + 3]
-                    v = (v * alpha + 255 * (255 - alpha)) // 255
-            out[y * width + x] = v
+                r, g, b = line[o], line[o + 1], line[o + 2]
+                alpha = line[o + 3] if channels == 4 else 255
+            if alpha != 255:
+                r = (r * alpha + 255 * (255 - alpha)) // 255
+                g = (g * alpha + 255 * (255 - alpha)) // 255
+                b = (b * alpha + 255 * (255 - alpha)) // 255
+            if rgb:
+                i = (y * width + x) * 3
+                out[i], out[i + 1], out[i + 2] = r, g, b
+            else:
+                # Rec. 601 luma.
+                out[y * width + x] = (r * 299 + g * 587 + b * 114) // 1000
     return width, height, out
 
 
-def dither(width: int, height: int, buf: bytearray) -> bytearray:
-    """Floyd-Steinberg to LEVELS grey levels, in place."""
-    step = 255.0 / (LEVELS - 1)
-    err = [0.0] * (width * height)
+def dither(width: int, height: int, buf: bytearray,
+           channels: int = 1, levels: int = LEVELS) -> bytearray:
+    """Floyd-Steinberg to `levels` levels per channel, in place.
+
+    For colour, each channel is diffused independently. That is the standard
+    treatment for a Kaleido-style panel: the colour filter array puts separate R,
+    G and B filters over neighbouring cells, so each channel really is quantised
+    on its own and coupling them would not model anything the hardware does.
+    """
+    step = 255.0 / (levels - 1)
+    err = [0.0] * (width * height * channels)
     for y in range(height):
-        row = y * width
+        row = y * width * channels
         for x in range(width):
-            i = row + x
-            old = buf[i] + err[i]
-            new = round(old / step) * step
-            new = 0.0 if new < 0 else (255.0 if new > 255 else new)
-            buf[i] = int(new)
-            e = old - new
-            # Distribute the residual to not-yet-visited neighbours.
-            if x + 1 < width:
-                err[i + 1] += e * 7 / 16
-            if y + 1 < height:
-                if x:
-                    err[i + width - 1] += e * 3 / 16
-                err[i + width] += e * 5 / 16
+            base = row + x * channels
+            for c in range(channels):
+                i = base + c
+                old = buf[i] + err[i]
+                new = round(old / step) * step
+                new = 0.0 if new < 0 else (255.0 if new > 255 else new)
+                buf[i] = int(new)
+                e = old - new
+                # Distribute the residual to not-yet-visited neighbours, staying
+                # within this channel's lattice.
                 if x + 1 < width:
-                    err[i + width + 1] += e * 1 / 16
+                    err[i + channels] += e * 7 / 16
+                if y + 1 < height:
+                    nxt = i + width * channels
+                    if x:
+                        err[nxt - channels] += e * 3 / 16
+                    err[nxt] += e * 5 / 16
+                    if x + 1 < width:
+                        err[nxt + channels] += e * 1 / 16
     return buf
 
 
@@ -176,34 +239,46 @@ def main() -> int:
     ap.add_argument("--height", type=int, default=DEFAULT_H)
     ap.add_argument("--no-dither", action="store_true",
                     help="quantise without dithering (shows why dithering is used)")
+    ap.add_argument("--color", action="store_true",
+                    help="keep colour and dither each channel (Kaleido CFA panel)")
+    ap.add_argument("--levels", type=int, default=LEVELS,
+                    help=f"levels per channel (default {LEVELS})")
     args = ap.parse_args()
+
+    channels = 3 if args.color else 1
 
     with tempfile.TemporaryDirectory() as td:
         staged = Path(td) / "staged.png"
         sips_prepare(Path(args.src), staged, args.width, args.height)
-        w, h, buf = read_png(staged)
+        w, h, buf = read_png(staged, rgb=args.color)
 
     if args.no_dither:
-        step = 255.0 / (LEVELS - 1)
+        step = 255.0 / (args.levels - 1)
         buf = bytearray(int(round(v / step) * step) for v in buf)
     else:
-        buf = dither(w, h, buf)
+        buf = dither(w, h, buf, channels=channels, levels=args.levels)
 
-    # A .raw destination writes the bare 8-bit greyscale plane instead of a PNG.
+    kind = f"{'24-bit RGB' if args.color else '8-bit grey'}"
+
+    # A .raw destination writes the bare pixel plane instead of a PNG.
     # src/ebcshow.c takes that directly, which keeps a PNG decoder out of a
     # freestanding aarch64 tool -- the dithering has already happened here, and
     # re-encoding it only to decode it again on the device buys nothing.
     if Path(args.dst).suffix == ".raw":
         Path(args.dst).write_bytes(bytes(buf))
-        print(f"{args.dst}: {w}x{h} 8-bit grey, {len(buf)} bytes, "
-              f"{LEVELS} levels, {'quantised' if args.no_dither else 'dithered'}")
+        print(f"{args.dst}: {w}x{h} {kind}, {len(buf)} bytes, "
+              f"{args.levels} levels/channel, "
+              f"{'quantised' if args.no_dither else 'dithered'}")
         print(f"  adb push {args.dst} /data/local/tmp/ && "
               f"adb shell /data/local/tmp/ebcshow /data/local/tmp/"
-              f"{Path(args.dst).name} {w} {h}")
+              f"{Path(args.dst).name} {w} {h} 270 2 1500 1 {channels}")
         return 0
 
+    if args.color:
+        raise SystemExit("--color writes .raw only; PNG output stays greyscale")
+
     write_png(Path(args.dst), w, h, buf)
-    print(f"{args.dst}: {w}x{h}, {LEVELS} grey levels, "
+    print(f"{args.dst}: {w}x{h}, {args.levels} grey levels, "
           f"{'quantised' if args.no_dither else 'dithered'}")
     return 0
 

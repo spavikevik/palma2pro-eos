@@ -192,6 +192,19 @@ PRODUCT_PACKAGES += \
     BlissLauncherEinkOverlay \
     FrameworkEinkOverlay
 
+# E-ink lock screensaver.
+#
+# An e-ink panel holds its last frame with no power, so locking the device
+# otherwise leaves the home screen -- or whatever you were reading -- on the
+# glass indefinitely, readable by anyone who picks it up.
+#
+# This is a plain oneshot binary, not framework code. Nothing composites at lock
+# time, which is what defeated three attempts inside SystemUI; the driver's
+# handwriting path bypasses the compositor entirely and works with the display
+# already asleep. See device/onyx/Palma2_Pro_C/epdc-screensaver/ and docs/22.
+PRODUCT_PACKAGES += \
+    epdc-screensaver
+
 # The navigation bar does not exist AT ALL without this: config_showNavigationBar
 # is false for this device, and PhoneWindowManager treats "0" here as an explicit
 # override that forces the bar on. It is read once, before WindowManager starts,

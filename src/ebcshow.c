@@ -175,7 +175,8 @@ static int send_full(int wf, int update_mode)
  * outside the panel are dropped, which lets an oversized image be shown rather
  * than rejected.
  */
-static void blit(uint32_t *dst, const unsigned char *src, int sw, int sh, int rot)
+static void blit(uint32_t *dst, const unsigned char *src, int sw, int sh,
+                 int rot, int channels)
 {
     for (size_t i = 0; i < (size_t)PANEL_W * PANEL_H; i++) dst[i] = 0xffffffffu;
 
@@ -189,9 +190,15 @@ static void blit(uint32_t *dst, const unsigned char *src, int sw, int sh, int ro
             default:  dx = x;            dy = y;             break;
             }
             if (dx < 0 || dx >= PANEL_W || dy < 0 || dy >= PANEL_H) continue;
-            uint32_t g = src[(size_t)y * sw + x];
+            const unsigned char *s = &src[((size_t)y * sw + x) * channels];
+            uint32_t r, g, b;
+            if (channels == 3) {
+                r = s[0]; g = s[1]; b = s[2];
+            } else {
+                r = g = b = s[0];
+            }
             dst[(size_t)dy * PANEL_W + dx] =
-                0xff000000u | (g << 16) | (g << 8) | g;
+                0xff000000u | (r << 16) | (g << 8) | b;
         }
     }
 }
@@ -200,8 +207,8 @@ int main(int argc, char **argv)
 {
     if (argc < 4) {
         fprintf(stderr,
-                "usage: %s <file.raw> <w> <h> [rot 0|90|180|270] [waveform] [hold_ms]\n"
-                "  file.raw is 8-bit greyscale, w*h bytes\n"
+                "usage: %s <file.raw> <w> <h> [rot] [waveform] [hold_ms] [mode] [ch]\n"
+                "  file.raw is w*h*ch bytes: ch=1 greyscale, ch=3 RGB\n"
                 "  rot defaults to 270 (portrait content -> landscape panel)\n"
                 "  hold_ms keeps the compositor locked out so the image stays up\n"
                 "  mode: 0 none, 1 flash (black+white), 2 sync from framebuffer\n",
@@ -223,6 +230,9 @@ int main(int argc, char **argv)
      * tried on the panel and both still ghost -- see the note above the modes
      * and docs/22 section 9.4.2. */
     const int do_clear = (argc > 7) ? atoi(argv[7]) : MODE_FLASH;
+    /* 1 = 8-bit greyscale, 3 = 24-bit RGB. Colour only reaches the glass on a
+     * CFA panel with cfa mode enabled; see the note by EBC_ENABLE_CFA_MODE. */
+    const int channels = (argc > 8) ? atoi(argv[8]) : 1;
 
     if (sw <= 0 || sh <= 0) {
         fprintf(stderr, "bad dimensions %dx%d\n", sw, sh);
@@ -233,7 +243,12 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    size_t need = (size_t)sw * sh;
+    if (channels != 1 && channels != 3) {
+        fprintf(stderr, "ch must be 1 (grey) or 3 (RGB)\n");
+        return 2;
+    }
+
+    size_t need = (size_t)sw * sh * channels;
     FILE *f = fopen(path, "rb");
     if (!f) {
         fprintf(stderr, "open %s: %s\n", path, strerror(errno));
@@ -244,8 +259,8 @@ int main(int argc, char **argv)
     size_t got = fread(src, 1, need, f);
     fclose(f);
     if (got != need) {
-        fprintf(stderr, "%s: expected %zu bytes for %dx%d, read %zu\n",
-                path, need, sw, sh, got);
+        fprintf(stderr, "%s: expected %zu bytes for %dx%d x%d, read %zu\n",
+                path, need, sw, sh, channels, got);
         free(src);
         return 1;
     }
@@ -343,14 +358,14 @@ int main(int argc, char **argv)
 
     /* The image goes in last: a sync would have overwritten it, and the rails
      * definitely did. */
-    blit(dst, src, sw, sh, rot);
+    blit(dst, src, sw, sh, rot, channels);
 
     if (send_full(wf, 1) != 0) {
         fprintf(stderr, "SEND_UPDATE: %s\n", strerror(errno));
         rc = 1;
     } else {
-        printf("shown: %s %dx%d rot=%d wf=%d clear=%d\n",
-               path, sw, sh, rot, wf, do_clear);
+        printf("shown: %s %dx%d rot=%d wf=%d clear=%d ch=%d\n",
+               path, sw, sh, rot, wf, do_clear, channels);
     }
 
     /* Let the waveform finish before taking the scheme away. The panel holds the
