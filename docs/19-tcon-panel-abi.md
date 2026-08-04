@@ -200,25 +200,52 @@ device's own firmware (`docs/03`):
 
 | value | name | notes |
 |---|---|---|
-| 0 | `EPD_AUTO` | **[V] tried, rejected** — heavy ghosting, worse than fixed GC16 |
-| 1 | `EPD_OVERLAY` | **[V] accepted, ~4x faster than GC16 — but ADDITIVE.** Drives pixels one way only, so previous frames stay on the panel. Correct for pen/ink overlay, unusable as a scrolling motion mode. |
-| **2** | **`EPD_FULL_GC16`** | **[V]** 16-level, clean. What Onyx uses; our default |
-| 3 | `EPD_FULL_GL16` | **[V] accepted, no speed gain over GC16** |
-| 5 | `EPD_FULL_GLD16` | untested |
-| 6 | `EPD_FULL_GCC16` | untested |
-| 8 | `EPD_PART_GL16` | **[V] REJECTED — produces no refresh at all.** Silently: no error, no log, panel simply does not update. |
-| 12 | `EPD_A2` | **[V] REJECTED — produces no refresh at all.** Silently. The mode every e-ink guide reaches for first; it does nothing on this panel. |
-| 14 | `EPD_RESET` | untested |
+| **2** | `gc16` | **[V]** 16 grey, clean, slow. Steady-state default |
+| 4 | `glr16` | **[V] accepted but STICKS** — frames stop updating mid-scroll, silently, with no driver error. Regal modes track per-pixel history; whatever that needs is not being maintained for us |
+| 5 | `gld16` | **[V] no output** |
+| **6** | `a2` | **[V] accepted. Binary (black/white only), fastest, and BIDIRECTIONAL** — unlike `overlay` it lifts ink as well as laying it, so it leaves no trail. The motion mode |
+| 8 | `glr16plus` | untested |
+| 9 | `glr16nm` | untested — "no measure", plausibly quicker than plain `glr16` |
+| — | `gcc16`, `glrc16` | **absent from this unit's waveform file** (index `-1`). These are the Kaleido colour modes; this panel reports `color_panel[0]` and has none |
 
-Measured 2026-08-03 by sweeping `persist.epdcshim.wf` and counting the driver's
-own `waveform_clean_work_handler` lines, filtered by kernel timestamp, with a
-known-good control (`wf 2`) in every run. Throughput under continuous scrolling,
-4 s window, throttle removed: GC16 **1**, GL16 **1**, OVERLAY **4**.
+**Take these from the driver, not from a table of mode names.** The kernel prints
+its own index map at boot and it is authoritative:
 
-A rejected mode is indistinguishable from a hung compositor from the outside --
-the screen just stops updating. If the panel freezes after a tuning change, look
-here first. Two earlier entries in this table (`8` and `12`) were inferred from
-the mode names and were wrong; both are now measured.
+```
+onyx_get_eink_screen_timing(): color_panel[0], timing_version[0], waveform_file_format[0]
+get_glr16_mode_index(): gc16[2] glr16[4] gld16[5] a2[6] gcc16[-1] glrc16[-1] glr16nm[9] glr16plus[8].
+```
+
+`adb shell dmesg | grep get_glr16_mode_index` recovers it on any unit. The indices
+are properties of the **loaded waveform file**, not fixed constants, so a
+different `.wbf` may renumber them.
+
+A mode that produces no output is externally indistinguishable from a hung
+compositor -- the screen simply stops updating, with nothing logged. If the panel
+freezes after a tuning change, look here first.
+
+### Correction, 2026-08-04
+
+An earlier version of this table listed `EPD_A2 = 12`, `EPD_PART_GL16 = 8` and
+`EPD_OVERLAY = 1`, and recorded A2 and PART_GL16 as *rejected, produces no
+refresh at all*. That was wrong, and it was expensive.
+
+Those numbers came from a mode-name table of unknown provenance rather than from
+this device. Mode 12 does not exist in this waveform file, so testing it produced
+nothing -- and "nothing" was written down as "the driver rejects this mode",
+alongside a passing control, which made it read as measured. The control was
+fine. The inputs were fiction.
+
+Everything downstream followed: the conclusion that **there is no fast and
+correct waveform on this hardware**, the resulting use of `overlay` (mode 1,
+additive, which smears every frame onto the panel), two bugs written to work
+around that smearing, and second-long full-drive passes to undo it.
+
+A2 works. It is mode 6, it is bidirectional, and it is what the motion path
+should have used from the start.
+
+The lesson is the one already in this document: **prefer a captured value to a
+derived one.** The driver printed the correct table at every boot the whole time.
 
 `update_mode` is a **separate axis**: flashing (repaint every pixel in the
 region) vs partial (drive only changed pixels). Cross-platform semantics of the
