@@ -1022,3 +1022,149 @@ so each channel really is quantised on its own.
 It also now **cover-crops** rather than fitting and padding. Fitting preserved the
 whole image and padded the short axis, which on a lock screen means white bands
 held at full contrast for hours; covering fills the panel and loses the overflow.
+
+---
+
+## 12. `0x701a` panics the kernel, and anyone can call it
+
+A blind sweep of the unidentified commands took the device down hard -- USB gone,
+adb gone. It recovered on its own in about five seconds, which is worth stating
+first because it is the payoff from section 10: this was a genuine kernel panic,
+and `panic_on_oops=1` with `panic=5` rebooted it without human intervention.
+`sys.boot.reason` reads `kernel_panic,bug`.
+
+The console record survived in pstore. Reconstructed from it: [V]
+
+```
+kernel BUG at mm/usercopy.c
+Internal error: Oops - BUG: 0 [#1] PREEMPT SMP
+Process ebcsweep (pid: 10459)
+pc : usercopy_abort+0x8c/0x90
+Call trace:
+  usercopy_abort+0x8c/0x90
+  __check_object_size+0x3dc/0x440
+  epdc_ioctl+0x914/0x3d08
+  do_vfs_ioctl / __arm64_sys_ioctl / el0_svc_common / el0_svc
+Kernel panic - not syncing: Fatal exception
+```
+
+`epdc_ioctl+0x914` is file offset `0x57b29c`, which is `0x40` into the case body
+at `0x57b25c` -- **command `0x701a`**. The offset in the backtrace is what
+identifies it; nothing else in the batch would have.
+
+### What the command does
+
+```
+x9  = (s32)g[0x3464]         ; capture buffer index
+w10 = g[0x3470]              ; a flag
+w11, w12 = g[0xe0], g[0xe4]  ; panel width, height
+x21 = [g + x9*8 + 0x2e50]    ; buffer = array[index]
+w8  = (w * h) << (flag ? 1 : 0)
+__check_object_size(x21, w8, 1)   ; 1 = copy TO user
+```
+
+So `0x701a` hands a **capture buffer** to userspace, sized `w*h` or `2*w*h`
+(1.3 MB or 2.7 MB at 1648x824). Those buffers are allocated by
+`SET_EBC_CAPTURE_SRART` (`0x7018`) and freed by `SET_EBC_CAPTURE_STOP`
+(`0x701b`). Called without a preceding start, `array[index]` is not a valid
+kernel object, hardened usercopy refuses it, and `BUG()` takes the machine down.
+
+There is no validation. The driver does not check that capture is running, that
+the index is in range, or that the pointer is non-NULL.
+
+### Security consequence
+
+```
+crw-rw-rw- 1 root root u:object_r:ebc_device:s0 10, 51 /dev/ebc
+```
+
+`/dev/ebc` is world read/write and SELinux is permissive on this build, so **any
+installed application can panic the device with a single ioctl and no
+permission at all.** No root, no special group. That is an unprivileged local
+denial of service, and it needs no exploit -- the correct call sequence simply
+omitted.
+
+Tracked with issue #5 (`ro.adb.secure=0`) as bring-up debt. Tightening the node's
+permissions is the practical fix; the driver bug itself is in a kernel Onyx does
+not publish source for.
+
+### Method note
+
+The sweep put fourteen unknown commands in one shell loop. When it died there was
+no output at all, so it was not possible to say from the sweep itself which
+command was responsible -- the backtrace offset settled it afterwards, and only
+because pstore preserved the console.
+
+**One command per invocation, with the result recorded on the host before the
+next one, costs a minute more and identifies the culprit directly.** The
+per-process `timeout` used here protects against a userspace hang and does
+nothing whatever about a kernel BUG.
+
+---
+
+## 13. Which update fields the driver actually reads
+
+`docs/19` and section 2.1 above treat the 40-byte update struct as though every
+field matters, and record hopeful notes about `temp` and `dither_mode`. Both are
+worth re-reading with this in hand.
+
+Method: the struct is copied to `sp+0x40` in `epdc_ioctl`, so each field has a
+known stack offset. Counting loads at those offsets says what is consumed. The
+struct's address also escapes as **argument 5 to `__onyx_epdc_buf_put_queue()`**,
+so that function was scanned too, tracking the pointer through its register
+aliases.
+
+| field | offset | reads in `epdc_ioctl` | reads in `buf_put_queue` | verdict |
+|---|---|---|---|---|
+| `rect[0..3]` | +0x00 | 5 | via callee | live |
+| `waveform_mode` | +0x10 | 6 | 12 | **live** |
+| `update_mode` | +0x14 | 0 | 0 | **no read found** |
+| `update_marker` | +0x18 | 7 | 18 | **live** |
+| `temp` | +0x1c | 0 | 0 | **no read found** |
+| `flags` | +0x20 | 9 | 8 | **live** |
+| `dither_mode` | +0x24 | 0 | 1, conditional | effectively dead |
+
+[D] -- this is static reachability, not an experiment.
+
+### What this means for two documented tunables
+
+* **`temp` is not read.** Section 2.1 says i.MX defines `TEMP_USE_AMBIENT` as
+  `0x1000`, that sending `0` might mean 0 degrees C, and that `4096` "is accepted
+  by the driver". It is accepted because it is **ignored**. That also explains
+  why the visual effect was never confirmed -- there is none.
+  `persist.epdcshim.temp` is almost certainly a no-op.
+
+* **`dither_mode` is read exactly once, behind a condition our updates never
+  satisfy.** The single site is guarded by `flags == 2`:
+
+  ```
+  ldr w10, [x25, #0x20]     ; flags
+  cmp w10, #2
+  b.ne <skip>               ; anything else -> dither_mode never loaded
+  ldr w10, [x25, #0x24]     ; dither_mode
+  ```
+
+  We send `flags = 0x31000`, so the branch is never taken.
+  `persist.epdcshim.dither` therefore does nothing on our path, and section 2.1's
+  "hardware dithering, free, if Onyx kept the semantics" should be read as: they
+  did not keep them in any form we can reach.
+
+* **`update_mode` is not read either**, so the i.MX `PARTIAL`/`FULL` distinction
+  does not exist here. Everything this driver does is decided by
+  `waveform_mode` and `flags`.
+
+### The limit of this analysis, stated
+
+Tracking the struct pointer through `__onyx_epdc_buf_put_queue` follows `mov`
+aliases, and that is not sound: a `mov` may retarget a register at a different
+object with a similar layout. There is a concrete hint of exactly that -- at the
+`dither_mode` site, `flags` is compared against `0xff`, `2` and `0xf`, which are
+not plausible values for a field we send as `0x31000`. So `x25` there may be an
+internal queue entry rather than the user's struct.
+
+The strong claims are the negative ones for `temp` and `update_mode`: no read at
+either level, under any aliasing. The `dither_mode` result should be treated as
+"not reachable on our path" rather than as a full account of the field.
+
+Both are cheap to falsify on the device -- send `dither_mode` 1..4 and `temp` 0
+against `0x1000` and look -- and that experiment has not been run.
