@@ -313,3 +313,80 @@ Known numbers remain those in `docs/19`: `0x7000` (**never call -- hangs**),
 **Do not guess and probe.** `0x7000` blocks forever and needs a hard power cycle,
 and several unknown commands (`CLEAR_ALL_UPDATE`, `LUT_ENABLE`, `GAMMA_TAB`,
 `panel_init`) could disturb or misconfigure the panel. Read the jump table.
+
+### 8.1 The jump table, decoded
+
+The switch dispatch is at `0x0057a9b4`:
+
+```
+0x0057a9b4  sub  w8, w1, #0x7000        ; normalise cmd
+0x0057a9b8  cmp  w8, #0x11d             ; 286 slots
+0x0057a9c4  b.hi 0x0057aa74             ; default
+0x0057a9c8  adrp x9, 0x01923000
+0x0057a9cc  add  x9, x9, #0x918         ; table @ 0x01923918
+0x0057a9d0  adr  x10, 0x0057a9e0        ; branch base
+0x0057a9d4  ldrh w11, [x9, x8, lsl #1]  ; 16-bit entries
+0x0057a9d8  add  x10, x10, x11, lsl #2
+0x0057a9dc  br   x10
+```
+
+So, in file-offset space:
+
+```python
+target = 0x0057a9e0 + u16_at(0x01923918 + (cmd - 0x7000) * 2) * 4
+```
+
+**46 real cases**; the other 240 slots point at the default (`0x0057e654`).
+Valid command numbers are **`0x7000`-`0x7029`** and **`0x7118`-`0x711d`**
+(`0x7005` and `0x7028` are absent).
+
+Confirmed correct -- these four reproduce the numbers `docs/19` already had from
+independent disassembly, which validates the method:
+
+| ioctl | target | name |
+|---|---|---|
+| `0x7000` | `0x0057c19c` | `GET_EBC_BUFFER` -- **never call, hangs** |
+| `0x7001` | `0x0057c21c` | `SET_EBC_SEND_BUFFER` |
+| `0x7002` | `0x0057c3bc` | `GET_EBC_DRIVER_SN` |
+| `0x7003` | `0x0057c434` | `GET_EBC_BUFFER_INFO` |
+| **`0x7004`** | `0x0057c4ec` | **`SET_EBC_LUT_ENABLE`** (new) |
+
+The remaining 41 case targets are known but **not yet mapped to names**, because
+most case blocks do not log a name at their entry point -- the printk sits deeper
+inside a branch. Finishing the job means disassembling each block from its target
+address; the addresses are the hard part and they are now in hand.
+
+Do **not** infer numbers from the order in which name strings appear in the
+binary: `GET_EBC_DRIVER_SN` (`0x7002`) appears *after* `GET_EBC_BUFFER_INFO`
+(`0x7003`) in rodata, so string order does not follow the enum.
+
+One caution on a tempting result: the block at `0x0057bb40` (`0x711d`) contains a
+`SET_EBC_SEND_UPDATE` reference, but `docs/19` records `SEND_UPDATE` as `0x700c`
+from disassembly, and the shim uses `0x700c` and works. The last block has no
+successor to bound it, so that association is probably an artefact of the block
+running past its real end. Treat it as unresolved rather than a correction.
+
+### 8.2 Case targets, unnamed
+
+```
+0x7006 0x0057a9e0   0x7013 0x0057c5c8   0x7020 0x0057b4ac
+0x7007 0x0057ab0c   0x7014 0x0057af38   0x7021 0x0057b538
+0x7008 0x0057ab74   0x7015 0x0057afb0   0x7022 0x0057b5c4
+0x7009 0x0057abf4   0x7016 0x0057c668   0x7023 0x0057b62c
+0x700a 0x0057ac18   0x7017 0x0057b030   0x7024 0x0057b6bc
+0x700b 0x0057ac98   0x7018 0x0057b0bc   0x7025 0x0057b73c
+0x700c 0x0057ad18   0x7019 0x0057b13c   0x7026 0x0057b7bc
+0x700d 0x0057ad30   0x701a 0x0057b25c   0x7027 0x0057b83c
+0x700e 0x0057adac   0x701b 0x0057c6ac   0x7029 0x0057b8ac
+0x700f 0x0057c508   0x701c 0x0057b32c   0x7118 0x0057b8d0
+0x7010 0x0057c588   0x701d 0x0057b33c   0x7119 0x0057b9c0
+0x7011 0x0057ae2c   0x701e 0x0057b398   0x711a 0x0057b9d8
+0x7012 0x0057aeac   0x701f 0x0057b418   0x711b 0x0057ba44
+                                        0x711c 0x0057bac4
+                                        0x711d 0x0057bb40
+```
+
+`0x700c` is `SET_EBC_SEND_UPDATE` per `docs/19`, so its block is `0x0057ad18`.
+That is a useful anchor: the neighbouring blocks in the `0x0057axxx` range are
+its siblings in the source, which is where `EXTBUF_SYNC_FB_ENABLE`,
+`FORCE_WAVEFORM`, `UPDATE_SCHEME` and `UPD_LIST_SIZE` most likely live.
