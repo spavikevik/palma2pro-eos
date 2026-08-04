@@ -966,3 +966,59 @@ Any installed app can drive the panel, switch it into handwrite scheme, or hang
 it with `0x7000`. SELinux is permissive on this build, so the `ebc_device` label
 constrains nothing. Belongs with issue #5 (`ro.adb.secure=0`) as bring-up debt to
 pay down before this is a daily driver.
+
+---
+
+## 11. Colour: the CFA path
+
+`0x7026` is `enable cfa mode`, and **its argument is inverted**. [V][D] From the
+case body:
+
+```
+cmp  w8, #0
+cset w8, ne                        ; w8 = (arg != 0)
+csel x2, "disable", "enable", ne   ; ne -> "disable"
+strb w8, [x9, #0x54]               ; the stored flag is "cfa DISABLED"
+```
+
+So `ioctl(fd, 0x7026, &zero)` **enables** it and a non-zero argument disables it.
+Passing `1` logs `disable cfa mode!`, which is the opposite of what anyone would
+predict from the command's name. The stored byte is a *disabled* flag, which is
+presumably where the inversion comes from.
+
+Driver state is not persistent, so a reboot returns the panel to its default
+regardless of what was set.
+
+### What the hardware evidence says
+
+| evidence | reading |
+|---|---|
+| `[ED061KC1 timing]` | the panel part |
+| `onyx_epdc_parse_dt(): cfa_mode[1017]` | a colour filter array **is** configured [T] |
+| `_onyx_epdc_extbuf_convert_gray_for_cfa`, `onyx_image_rect_adjust_for_cfa` | the driver has CFA-specific conversion |
+| `get_glr16_mode_index(): gcc16[-1] glrc16[-1]` | both **colour waveform modes are absent** from the loaded `.wbf` |
+| `onyx_get_eink_screen_timing(): get color_panel failed! set default val 0!` | `color_panel[0]` is a **fallback**, not a real answer -- the DT read failed |
+
+The last row matters: `color_panel[0]` looks like "this is not a colour panel"
+and is actually "nobody told us", so it is not evidence either way. The
+`gcc16[-1] glrc16[-1]` line is the real constraint -- a Kaleido panel renders
+colour through colour-specific waveforms, and this unit's waveform file does not
+contain them.
+
+### The rotation, independently confirmed
+
+The same devicetree line gives `sf_rotation[270]`, which matches the rotation
+established in section 9.4 by looking at the panel. Two independent sources, and
+the DT one was found afterwards -- worth noting because 90 and 270 are
+indistinguishable from geometry alone.
+
+### Artwork
+
+`scripts/gen-screensaver.py --color` keeps RGB and diffuses each channel
+independently rather than converting to luma. That is the right model for a CFA
+panel: the filter array puts separate R, G and B filters over neighbouring cells,
+so each channel really is quantised on its own.
+
+It also now **cover-crops** rather than fitting and padding. Fitting preserved the
+whole image and padded the short axis, which on a lock screen means white bands
+held at full contrast for hours; covering fills the panel and loses the overflow.
