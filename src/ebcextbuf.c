@@ -188,6 +188,33 @@ int main(int argc, char **argv)
         u.temp = 0x1000;            /* TEMP_USE_AMBIENT */
         u.flags = 0x31000;          /* captured from stock */
         call(EBC_SEND_UPDATE, &u, "SEND_UPDATE");
+    } else if (!strcmp(argv[1], "pwrdown")) {
+        /* 0x7016 logs "SET_EBC_UPD_LIST_SIZE val = N!pwrdown_delay = N!", so it
+         * carries both in one struct. pwrdown_delay is how long the panel stays
+         * powered after the last update -- the knob the SystemUI screensaver
+         * needed and could not reach, because mScreenState goes OFF before a
+         * composited frame lands and no framework API exposes this. */
+        if (argc < 4) { usage(); return 2; }
+        struct { int32_t list_size; int32_t pwrdown_delay; int32_t pad[14]; } a;
+        memset(&a, 0, sizeof a);
+        a.list_size = (int32_t)strtol(argv[2], NULL, 0);
+        a.pwrdown_delay = (int32_t)strtol(argv[3], NULL, 0);
+        call(EBC_UPD_LIST_SIZE, &a, "UPD_LIST_SIZE+pwrdown");
+        printf("  sent list_size=%d pwrdown_delay=%d\n", a.list_size, a.pwrdown_delay);
+    } else if (!strcmp(argv[1], "poke")) {
+        /* poke <cmd> <u32> [<u32> ...] -- fill consecutive 32-bit slots of the
+         * argument and see which one the driver echoes back in its log. That
+         * maps a struct layout without guessing it: put a distinctive value in
+         * one slot at a time and read where it surfaces. */
+        if (argc < 4) { usage(); return 2; }
+        unsigned long cmd = strtoul(argv[2], NULL, 0);
+        if (cmd == EBC_GET_BUFFER) { printf("  refusing 0x7000\n"); return 3; }
+        static unsigned char page[4096] __attribute__((aligned(4096)));
+        memset(page, 0, sizeof page);
+        uint32_t *u = (uint32_t *)page;
+        for (int i = 3; i < argc && i - 3 < 16; i++)
+            u[i - 3] = (uint32_t)strtoul(argv[i], NULL, 0);
+        call(cmd, page, "poke");
     } else if (!strcmp(argv[1], "raw")) {
         /* Arbitrary command, for controlled probing. Always probe a number that
          * is ABSENT from the jump table first (0x7005, 0x7028) -- if the default

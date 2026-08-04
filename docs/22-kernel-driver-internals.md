@@ -520,3 +520,42 @@ Both were hit while probing, both recoverable, both worth avoiding.
    to power-cycle when experimenting with Regal.
 
 And still: **never call `0x7000`**. It blocks forever.
+
+### 8.7 `pwrdown_delay` and `extbuf`: both dead ends via ioctl
+
+Two leads from section 6 were chased to the end and did not pay off. Recording
+them so nobody spends the time again.
+
+**`pwrdown_delay` is readable but not settable.** `0x7016` logs
+`SET_EBC_UPD_LIST_SIZE val = N!pwrdown_delay = N!`, which reads like it carries
+both. It does not. Poking a distinctive value into each 32-bit slot of the
+argument in turn shows only slot 0 is consumed -- it is `val`, the list size --
+and `pwrdown_delay` is merely *printed* alongside. Its value on this device is
+**0**.
+
+That log line is a useful read-back channel, though: call `0x7016` after any
+other command to see whether the delay moved. Sweeping every unidentified number
+in `0x7006`-`0x7029` that way changed it from 0 exactly never. So no ioctl in the
+switch sets it, despite `onyx_epdc_set_pwrdown_delay` existing as a symbol, and
+no sysfs file exposes it either (`find /sys -iname "*pwrdown*"` finds only an
+unrelated DVB parameter).
+
+**`extbuf` is not reachable by ioctl at all.** No number in `0x7001`-`0x7029` or
+`0x7118`-`0x711d` logs an extbuf name. Section 5's hope that
+`SET_EBC_EXTBUF_SYNC_FB_ENABLE` was an entry point was wrong: `0x701f` -- the
+number a reachability trace suggested -- falls silently to the default. The path
+exists in the driver, but it is driven from somewhere else: the framebuffer
+device node, an internal caller, or a sysfs store nobody has found.
+
+**Consequence for the lock screensaver (issue #14).** Both routes out of the
+SystemUI dead end are closed for now. What remains:
+
+* find whatever *does* drive `extbuf` -- the `onyx_epdc_fb` device node has its
+  own ioctl handler distinct from `/dev/ebc`, and has not been examined
+* find what sets `pwrdown_delay`, since 0 means the panel powers down at once
+* accept the compositor route and work out why a composited frame did not reach
+  the panel: the overlay window *was* added and SurfaceFlinger *did* composite
+  six frames, yet no `waveform_clean` followed, so the loss is below
+  SurfaceFlinger and above the panel
+
+The third is the most tractable and the least explored.
