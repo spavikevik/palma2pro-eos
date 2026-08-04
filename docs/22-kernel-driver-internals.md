@@ -391,7 +391,7 @@ That is a useful anchor: the neighbouring blocks in the `0x0057axxx` range are
 its siblings in the source, which is where `EXTBUF_SYNC_FB_ENABLE`,
 `FORCE_WAVEFORM`, `UPDATE_SCHEME` and `UPD_LIST_SIZE` most likely live.
 
-### 8.3 Resolved ioctl numbers
+### 8.3 Resolved ioctl numbers (PARTLY WRONG -- see 8.5)
 
 Case blocks are **prologues that branch into shared implementation code**, which
 is why they carry no name string at their entry point -- `0x700c` sets up state
@@ -451,3 +451,72 @@ buffer held nothing.
 
 Probe carefully and one ioctl at a time, with `debug_level 4` set so the driver
 narrates what it receives. Do not call `0x7000`.
+
+### 8.5 Ground truth: ask the driver
+
+**Supersedes the reachability results in 8.3.** At `debug_level 2` the driver
+names every ioctl it receives:
+
+```sh
+adb shell 'echo 2 > /sys/devices/virtual/sepdc/debug/debug_level'
+# then, per command:  dmesg -c; <call>; dmesg | grep epdc_ioctl
+```
+
+That beats any static analysis, and it corrected the reachability mapping: of the
+six numbers checked against it, four held and **two were wrong**. Reachability
+follows branches into shared implementation code that many cases reach, so a name
+found along the way is not necessarily *this* case's name.
+
+Confirmed by the driver itself:
+
+| ioctl | driver says |
+|---|---|
+| `0x7002` | `GET_EBC_DRIVER_SN` -> `ONYX_EBC_DRIVER_VERSION_2.00` |
+| `0x7003` | `GET_EBC_BUFFER_INFO` -> geometry 1648x824 |
+| `0x7004` | `SET_EBC_LUT_ENABLE` |
+| `0x7008` | `set waiting_for_all_lut_free` |
+| **`0x700a`** | **`set reagl_enable[N]`** -- REAGL, the Regal feature |
+| **`0x700b`** | **`set force_waveform = N`** -- `EBC_FORCE_WAVEFORM` |
+| `0x700c` | `SET_EBC_SEND_UPDATE` (matches `docs/19`) |
+| `0x700f` | `SET_EBC_CLEAR_ALL_UPDATE` |
+| `0x7010` | `SET_EBC_WAIT_ALL_UPDATE_COMPLETE` |
+| `0x7013` | `capture from buf_gray[...]` |
+| **`0x7016`** | `SET_EBC_UPD_LIST_SIZE val=N` **and `pwrdown_delay=N`** |
+| `0x7018` | `SET_EBC_CAPTURE_SRART` -- allocates 12 capture buffers |
+| `0x701b` | `SET_EBC_CAPTURE_STOP` |
+| **`0x7026`** | **`enable cfa mode`** -- Colour Filter Array |
+
+**Disproved:** `0x7006` is not `UPDATE_SCHEME` and **`0x701f` is not
+`EXTBUF_SYNC_FB_ENABLE`** -- both fall through to the default silently. No number
+in `0x7001`-`0x7029` or `0x7118`-`0x711d` reports an extbuf name, so **the extbuf
+path is not reachable through this ioctl switch at all.** It must be driven from
+somewhere else: the fb device node, a sysfs store, or an internal caller.
+
+Silent numbers (no log, may still be implemented): `0x7001`, `0x7006`, `0x7007`,
+`0x7009`, `0x700d`, `0x700e`, `0x7011`, `0x7012`, `0x7014`, `0x7015`, `0x7017`,
+`0x7019`, `0x701a`, `0x701c`-`0x7025`, `0x7027`, `0x7029`, `0x7118`-`0x711d`.
+
+Three of these are worth pursuing:
+
+* **`0x700a reagl_enable`** -- `glr16` (mode 4) is accepted but stalls (`docs/19`).
+  REAGL is exactly the feature Regal waveforms need, so this may be the missing
+  piece, and would give a 16-grey fast mode instead of A2's binary flicker.
+* **`0x700b force_waveform`** -- forces a mode independent of the per-update field.
+* **`0x7016 pwrdown_delay`** -- the panel power-down delay. The SystemUI
+  screensaver failed because `mScreenState=OFF` before anything composited; this
+  is the knob that governs that, and it is an ioctl, not a framework API.
+
+### 8.6 Two ways this crashes the device
+
+Both were hit while probing, both recoverable, both worth avoiding.
+
+1. **Passing a small argument to a setter.** `long v; ioctl(fd, cmd, &v)`
+   **rebooted the device**. These commands expect sizeable structs and
+   `copy_from_user` reads whatever follows an 8-byte local -- stack garbage
+   interpreted as pointers and lengths. Always hand over a **zeroed page**. After
+   that change roughly forty probes ran clean.
+2. **`reagl_enable=1` followed by driving `glr16`** left the device unresponsive
+   over adb and needing a power cycle. Change one of these at a time, and expect
+   to power-cycle when experimenting with Regal.
+
+And still: **never call `0x7000`**. It blocks forever.
