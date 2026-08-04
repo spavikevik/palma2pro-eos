@@ -390,3 +390,64 @@ running past its real end. Treat it as unresolved rather than a correction.
 That is a useful anchor: the neighbouring blocks in the `0x0057axxx` range are
 its siblings in the source, which is where `EXTBUF_SYNC_FB_ENABLE`,
 `FORCE_WAVEFORM`, `UPDATE_SCHEME` and `UPD_LIST_SIZE` most likely live.
+
+### 8.3 Resolved ioctl numbers
+
+Case blocks are **prologues that branch into shared implementation code**, which
+is why they carry no name string at their entry point -- `0x700c` sets up state
+and then `b 0x0057bda0`. Mapping them therefore needs a reachability trace, not a
+proximity guess: walk forward from each case target following `b`, `b.cond`,
+`cbz/cbnz`, `tbz/tbnz` and fallthrough, and record any `ADRP`+`ADD` that
+references a `SET_EBC_*` / `GET_EBC_*` string.
+
+| ioctl | name | |
+|---|---|---|
+| `0x7000` | `GET_EBC_BUFFER` | **never call -- blocks forever** |
+| `0x7001` | `SET_EBC_SEND_BUFFER` | |
+| `0x7002` | `GET_EBC_DRIVER_SN` | |
+| `0x7003` | `GET_EBC_BUFFER_INFO` | |
+| `0x7004` | `SET_EBC_LUT_ENABLE` | |
+| `0x7006` | `SET_EBC_UPDATE_SCHEME` | i.MX schemes + Onyx's HANDWRITE |
+| `0x700c` | `SET_EBC_SEND_UPDATE` | the working submit |
+| `0x700f` | `SET_EBC_CLEAR_ALL_UPDATE` | |
+| `0x7010` | `SET_EBC_WAIT_ALL_UPDATE_COMPLETE` | |
+| `0x7014` | `SET_EBC_GAMMA_TAB` | |
+| `0x7016` | `SET_EBC_UPD_LIST_SIZE` | queue depth |
+| `0x7018` | `SET_EBC_CAPTURE_SRART` | (sic) capture start |
+| `0x701b` | `SET_EBC_CAPTURE_STOP` | |
+| **`0x701f`** | **`SET_EBC_EXTBUF_SYNC_FB_ENABLE`** | **the out-of-band path, section 5** |
+| `0x711b` | `GET_EBC_CAPTURE_ALL_NAME` | |
+| `0x711c` | `GET_EBC_CAPTURE_ALL_BUFFER` | read back what the panel shows |
+
+**Validation.** Five of these -- `0x7000`, `0x7001`, `0x7002`, `0x7003` and
+`0x700c` -- reproduce numbers `docs/19` obtained independently by disassembly.
+`0x700c` is the strongest check: the shim uses it every frame and the display
+works.
+
+This also resolves the caution in section 8.1: `SEND_UPDATE` is `0x700c`, not
+`0x711d`. The `0x711d` association was an artefact of the final block having no
+successor to bound it, exactly as suspected. **`0x711d` remains unidentified.**
+
+`EBC_FORCE_WAVEFORM` did not resolve -- its name string is referenced from code
+no case block reaches within the trace budget, so it is probably called from a
+different entry point (a sysfs store, or an internal caller) rather than from the
+ioctl switch.
+
+Remaining unnamed cases: `0x7007`-`0x700b`, `0x700d`, `0x700e`, `0x7011`-`0x7013`,
+`0x7015`, `0x7017`, `0x7019`, `0x701a`, `0x701c`-`0x701e`, `0x7020`-`0x7027`,
+`0x7029`, `0x7118`-`0x711a`, `0x711d`. Their targets are listed in section 8.2.
+
+### 8.4 What to try next with `0x701f`
+
+`SET_EBC_EXTBUF_SYNC_FB_ENABLE` is a *setter*, so it presumably takes a flag or a
+small struct rather than an image. The likely sequence is: enable sync, then hand
+over a buffer via `SET_EBC_SEND_BUFFER` (`0x7001`) or the extbuf path, then
+submit. The printk `"extbuf[%p] width[%d] height[%d] convert_gray[%d]"` shows the
+driver expects pointer, dimensions and a greyscale-conversion flag.
+
+If enabling it makes `/dev/ebc` reflect the real framebuffer, that alone would
+fix the settle pass (issue #2), which blanked the panel precisely because the EBC
+buffer held nothing.
+
+Probe carefully and one ioctl at a time, with `debug_level 4` set so the driver
+narrates what it receives. Do not call `0x7000`.
