@@ -205,6 +205,18 @@ PRODUCT_PACKAGES += \
 PRODUCT_PACKAGES += \
     epdc-screensaver
 
+# The artwork it shows. Pre-rendered rather than generated at build time:
+# gen-screensaver.py drives `sips`, which is macOS-only, and the builder is
+# Linux. The plane is flat-quantised to the panel's 16 levels per channel and
+# NOT dithered -- a woodblock print is mostly flat tone, so dithering only adds
+# high-frequency noise, and it costs 40% more space (531 KB compressed against
+# 753 KB) for a worse-looking result.
+#
+# Provenance is in THIRD_PARTY.md. Public domain, Met Open Access, verified
+# against the museum's own API rather than assumed.
+PRODUCT_COPY_FILES += \
+    $(LOCAL_PATH)/epdc-screensaver/artwork/01-great-wave.raw:$(TARGET_COPY_OUT_SYSTEM)/etc/epdc/screensaver/01-great-wave.raw
+
 # The navigation bar does not exist AT ALL without this: config_showNavigationBar
 # is false for this device, and PhoneWindowManager treats "0" here as an explicit
 # override that forces the bar on. It is read once, before WindowManager starts,

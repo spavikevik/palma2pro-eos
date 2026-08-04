@@ -29,7 +29,8 @@
  *
  * IMAGES
  * ------
- * Pre-dithered raw planes in EPDC_SS_DIR, produced by scripts/gen-screensaver.py.
+ * Raw pixel planes produced by scripts/gen-screensaver.py, shipped in
+ * /system/etc/epdc/screensaver and overridable from /data/misc/epdc/screensaver.
  * Geometry is inferred from file size rather than carried in a header: at the
  * panel's fixed 824x1648 there are exactly two valid sizes, and inferring them
  * avoids inventing a metadata format for two cases.
@@ -73,7 +74,14 @@
 #define SIZE_GREY ((size_t)SRC_W * SRC_H)
 #define SIZE_RGB  ((size_t)SRC_W * SRC_H * 3)
 
-#define EPDC_SS_DIR   "/data/misc/epdc/screensaver"
+/* Two directories, searched in this order.
+ *
+ * The shipped artwork lives in /system/etc and is read-only. Anything the user
+ * drops in /data wins, so replacing the picture never means modifying the system
+ * image -- and an empty /data directory falls back to what shipped rather than
+ * showing nothing. */
+#define EPDC_SS_USER  "/data/misc/epdc/screensaver"
+#define EPDC_SS_STOCK "/system/etc/epdc/screensaver"
 #define EPDC_SS_INDEX "/data/misc/epdc/screensaver.idx"
 
 /* A full-panel GC16 is ~33 frames, a bit under half a second. */
@@ -156,21 +164,30 @@ static void store_index(unsigned v)
     if (f) { fprintf(f, "%u\n", v); fclose(f); }
 }
 
-static int pick(char *out, size_t outsz)
+static int scan(const char *dir, char names[][256], int n, int max)
 {
-    DIR *d = opendir(EPDC_SS_DIR);
-    if (!d) return -1;
-
-    char names[64][256];
-    int n = 0;
+    DIR *d = opendir(dir);
+    if (!d) return n;
     struct dirent *e;
-    while ((e = readdir(d)) && n < 64) {
+    while ((e = readdir(d)) && n < max) {
         size_t len = strlen(e->d_name);
         if (len < 5 || strcmp(e->d_name + len - 4, ".raw") != 0) continue;
         snprintf(names[n], sizeof names[n], "%s", e->d_name);
         n++;
     }
     closedir(d);
+    return n;
+}
+
+static int pick(char *out, size_t outsz)
+{
+    char names[64][256];
+    const char *dir = EPDC_SS_USER;
+    int n = scan(EPDC_SS_USER, names, 0, 64);
+    if (n == 0) {
+        dir = EPDC_SS_STOCK;
+        n = scan(EPDC_SS_STOCK, names, 0, 64);
+    }
     if (n == 0) return -1;
 
     /* Sort so the rotation order is stable across boots; readdir order is not. */
@@ -187,7 +204,7 @@ static int pick(char *out, size_t outsz)
 
     unsigned idx = load_index() % (unsigned)n;
     store_index((idx + 1) % (unsigned)n);
-    snprintf(out, outsz, "%s/%s", EPDC_SS_DIR, names[idx]);
+    snprintf(out, outsz, "%s/%s", dir, names[idx]);
     return 0;
 }
 

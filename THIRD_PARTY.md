@@ -180,6 +180,49 @@ the user-facing form of the same promotion idea, and the reason
 
 ---
 
+## Artwork shipped in the image
+
+`device/onyx/Palma2_Pro_C/epdc-screensaver/artwork/01-great-wave.raw` is the
+only third-party creative work this repository redistributes.
+
+| | |
+|---|---|
+| work | *Under the Wave off Kanagawa (Kanagawa oki nami ura)*, also known as *The Great Wave*, from the series *Thirty-six Views of Mount Fuji (Fugaku sanjūrokkei)* |
+| artist | Katsushika Hokusai (Japanese, Tokyo (Edo) 1760–1849 Tokyo (Edo)) |
+| date | ca. 1830–32 |
+| medium | Woodblock print; ink and color on paper |
+| holder | The Metropolitan Museum of Art, New York |
+| credit line | Rogers Fund, 1914 |
+| object | 36491 — <https://www.metmuseum.org/art/collection/search/36491> |
+| source image | <https://images.metmuseum.org/CRDImages/as/original/DP141063.jpg> |
+| status | public domain; The Met **Open Access**, released under CC0 1.0 |
+
+The underlying work is public domain by age. The Met additionally places its
+Open Access images under CC0 1.0, so neither the photograph nor the print
+carries a restriction here.
+
+**How this was checked, rather than assumed.** The museum's own API reports
+`"isPublicDomain": true` for object 36491, and the source image above is that
+object's `primaryImage`:
+
+```sh
+curl -s https://collectionapi.metmuseum.org/public/collection/v1/objects/36491 \
+  | python3 -m json.tool | grep -E 'isPublicDomain|primaryImage|creditLine'
+```
+
+That check is worth keeping, because the first image used during development was
+a different Met file (`DP130155.jpg`) whose owning object could not be
+identified, and therefore whose rights status could not be confirmed. It was
+replaced rather than shipped on an assumption. Not every file under
+`images.metmuseum.org/CRDImages/` belongs to an Open Access object.
+
+**Derivation.** The shipped file is not the JPEG. It is an 824x1648 24-bit RGB
+plane, cover-cropped and flat-quantised to 16 levels per channel by
+`scripts/gen-screensaver.py --color --no-dither`. The recipe is in the repo, so
+the derivation is reproducible from the source URL above.
+
+---
+
 ## Onyx proprietary material
 
 This is the part to be careful about.
@@ -210,5 +253,7 @@ reference, and why nothing here can be redistributed as a flashable image.
   waveform blob, not the TCON firmware
 * a launcher built from BlissLauncher3 source would be **GPL-3.0** and would
   require offering the corresponding source
+* the shipped Hokusai artwork is public domain / CC0 and **may** be redistributed
+  — it is the one third-party creative work here that can be
 * the CERN-OHL-S on Caster does not reach us: we reimplemented an idea, took no
   gateware
