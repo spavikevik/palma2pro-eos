@@ -259,12 +259,32 @@ status)
 
 stop)
     need_pin
+    # -x, never -f. `pkill -f soong_ui` matches the whole command line, and the
+    # shell running THIS script has "soong_ui" in its own -- so it killed itself
+    # partway through and left the build running, while reporting nothing useful.
+    # Same self-matching trap the sync PID file exists to avoid.
+    #
+    # ckati and java are here because stopping a build has to leave the tree
+    # startable: a half-killed build leaves orphaned r8 JVMs holding tens of
+    # gigabytes, and the next build then dies on memory rather than on anything
+    # to do with the source.
     ssh "${ssh_opts[@]}" "$TARGET" "
-        pkill -f soong_ui  2>/dev/null || true
-        pkill -x soong_build 2>/dev/null || true
-        pkill -x ninja 2>/dev/null || true
+        for _p in soong_ui soong_build ninja ckati; do
+            pkill -x \$_p 2>/dev/null || true
+        done
+        sleep 3
+        for _p in soong_ui soong_build ninja ckati; do
+            pkill -9 -x \$_p 2>/dev/null || true
+        done
+        pkill -x java 2>/dev/null || true
         sleep 2
-        pgrep -x soong_build >/dev/null && echo 'still running' || echo 'build stopped'
+        pkill -9 -x java 2>/dev/null || true
+        _left=0
+        for _p in soong_ui soong_build ninja ckati java; do
+            _n=\$(pgrep -cx \$_p 2>/dev/null || true)
+            [ -n \"\$_n\" ] && [ \"\$_n\" != 0 ] && { echo \"still running: \$_p (\$_n)\"; _left=1; }
+        done
+        [ \$_left -eq 0 ] && echo 'build stopped, tree clean'
     "
     ;;
 
