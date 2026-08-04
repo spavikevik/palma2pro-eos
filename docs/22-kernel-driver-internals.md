@@ -256,3 +256,60 @@ already have.
 5. Why `glr16` (mode 4) is accepted but stalls, while `a2` (6) works. Adding
    i.MX's `EPDC_FLAG_USE_REGAL` (`0x8000`) did not fix it -- tested.
 6. `EBC_CAPTURE_ALL_*` as a way to verify panel contents directly.
+
+---
+
+## 8. Locating the ioctl handler (partial)
+
+The handler is at **`0x0057a000`-`0x0057e000`** in `kernel.bin` (file offsets, raw
+arm64 Image extracted per section 1). Every case logs its own name, so the code
+is self-labelling:
+
+```
+code@0x0057c194 -> "%s(): SET_EBC_SEND_UPDATE"
+code@0x0057c1a4 -> "%s(): GET_EBC_BUFFER"
+code@0x0057c224 -> "%s(): SET_EBC_SEND_BUFFER"
+code@0x0057c3c4 -> "%s(): GET_EBC_DRIVER_SN"
+code@0x0057c43c -> "%s(): GET_EBC_BUFFER_INFO"
+code@0x0057c4f4 -> "%s(): SET_EBC_LUT_ENABLE"
+code@0x0057c510 -> "%s(): -- SET_EBC_CLEAR_ALL_UPDATE"
+code@0x0057c5a4 -> "%s(): -- SET_EBC_WAIT_ALL_UPDATE_COMPLETE"
+code@0x0057c6b4 -> "%s(): SET_EBC_CAPTURE_STOP"
+code@0x0057cd9c -> "%s(): SET_EBC_GAMMA_TAB"
+code@0x0057cf8c -> "%s(): SET_EBC_CAPTURE_SRART"
+code@0x0057da44 -> "%s(): SET_EBC_UPDATE_SCHEME"
+```
+
+### How these were found
+
+Format strings are referenced by `ADRP` + `ADD` pairs. Compute the target in
+**file-offset space** -- PC-relative arithmetic is invariant under the fixed
+file-offset-to-VA shift, so no load address is needed:
+
+```python
+# ADRP
+imm = ((instr >> 5) & 0x7FFFF) << 2 | ((instr >> 29) & 3)
+if imm & (1 << 20): imm -= (1 << 21)
+base = (offset & ~0xFFF) + (imm << 12)
+# ADD (imm, 64-bit, sh=0):  target = base + imm12
+```
+
+**Match the START of the containing C string, not the `EBC_...` substring.** The
+code references `"%s(): SET_EBC_SEND_UPDATE"`, so searching for `EBC_` offsets
+finds nothing -- walk back to the preceding non-printable byte first. That
+mistake cost a full scan.
+
+### What is still missing
+
+The ioctl **numbers**. Only two `MOVZ #0x70xx` immediates appear in the handler
+range, far fewer than there are cases, so the compiler normalised the switch --
+almost certainly `sub w, w, #0x7000` followed by a jump table on the small
+remainder. Recovering the mapping means decoding that dispatch, not pattern
+matching immediates.
+
+Known numbers remain those in `docs/19`: `0x7000` (**never call -- hangs**),
+`0x7001`, `0x7002`, `0x7003`, `0x700c`.
+
+**Do not guess and probe.** `0x7000` blocks forever and needs a hard power cycle,
+and several unknown commands (`CLEAR_ALL_UPDATE`, `LUT_ENABLE`, `GAMMA_TAB`,
+`panel_init`) could disturb or misconfigure the panel. Read the jump table.
