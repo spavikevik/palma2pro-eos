@@ -189,6 +189,19 @@ def main() -> int:
     else:
         buf = dither(w, h, buf)
 
+    # A .raw destination writes the bare 8-bit greyscale plane instead of a PNG.
+    # src/ebcshow.c takes that directly, which keeps a PNG decoder out of a
+    # freestanding aarch64 tool -- the dithering has already happened here, and
+    # re-encoding it only to decode it again on the device buys nothing.
+    if Path(args.dst).suffix == ".raw":
+        Path(args.dst).write_bytes(bytes(buf))
+        print(f"{args.dst}: {w}x{h} 8-bit grey, {len(buf)} bytes, "
+              f"{LEVELS} levels, {'quantised' if args.no_dither else 'dithered'}")
+        print(f"  adb push {args.dst} /data/local/tmp/ && "
+              f"adb shell /data/local/tmp/ebcshow /data/local/tmp/"
+              f"{Path(args.dst).name} {w} {h}")
+        return 0
+
     write_png(Path(args.dst), w, h, buf)
     print(f"{args.dst}: {w}x{h}, {LEVELS} grey levels, "
           f"{'quantised' if args.no_dither else 'dithered'}")

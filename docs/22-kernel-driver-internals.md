@@ -486,11 +486,27 @@ Confirmed by the driver itself:
 | `0x701b` | `SET_EBC_CAPTURE_STOP` |
 | **`0x7026`** | **`enable cfa mode`** -- Colour Filter Array |
 
-**Disproved:** `0x7006` is not `UPDATE_SCHEME` and **`0x701f` is not
-`EXTBUF_SYNC_FB_ENABLE`** -- both fall through to the default silently. No number
-in `0x7001`-`0x7029` or `0x7118`-`0x711d` reports an extbuf name, so **the extbuf
-path is not reachable through this ioctl switch at all.** It must be driven from
-somewhere else: the fb device node, a sysfs store, or an internal caller.
+**~~Disproved:~~ WRONG -- retracted, see section 9.2.** This section claimed
+`0x7006` is not `UPDATE_SCHEME` and `0x701f` is not `EXTBUF_SYNC_FB_ENABLE`,
+because neither logged anything at `debug_level 2`. Both claims are false.
+`0x7006` **is** `SET_EBC_UPDATE_SCHEME`, verified on the device: it logs
+`o_e_f_s_u_s(): Setting upd scheme level to 3! ... OK!` and the driver's
+behaviour changes accordingly.
+
+The error was in the method, not the reading. Two things defeat it:
+
+* The confirmation is printed by **`onyx_epdc_fb_set_upd_scheme()`**, which logs
+  under the abbreviated name `o_e_f_s_u_s()`. Filtering `dmesg` for `epdc_ioctl`
+  -- as 8.5's recipe says to -- cannot see it.
+* `debug_level` is **a multi-byte bitmask, not a level.** `SET_EBC_UPDATE_SCHEME`'s
+  second message is gated on bit 0 of the byte at `epdc_debug_level`; the
+  `HANDWRITE_UPDATE` message is gated on bit 4 of `epdc_debug_level + 1`. Writing
+  `2` sets neither. [D]
+
+So "no output at `debug_level 2`" never proved a command was unimplemented, and
+should not have been allowed to override a static result. The lesson is the one
+in `CLAUDE.md` -- *absence of log lines proves nothing* -- applied here to a
+method that had been introduced precisely to be ground truth.
 
 Silent numbers (no log, may still be implemented): `0x7001`, `0x7006`, `0x7007`,
 `0x7009`, `0x700d`, `0x700e`, `0x7011`, `0x7012`, `0x7014`, `0x7015`, `0x7017`,
@@ -562,22 +578,391 @@ switch sets it, despite `onyx_epdc_set_pwrdown_delay` existing as a symbol, and
 no sysfs file exposes it either (`find /sys -iname "*pwrdown*"` finds only an
 unrelated DVB parameter).
 
-**`extbuf` is not reachable by ioctl at all.** No number in `0x7001`-`0x7029` or
-`0x7118`-`0x711d` logs an extbuf name. Section 5's hope that
-`SET_EBC_EXTBUF_SYNC_FB_ENABLE` was an entry point was wrong: `0x701f` -- the
-number a reachability trace suggested -- falls silently to the default. The path
-exists in the driver, but it is driven from somewhere else: the framebuffer
-device node, an internal caller, or a sysfs store nobody has found.
+**~~`extbuf` is not reachable by ioctl at all.~~ Superseded by section 9.4.** The
+conclusion rested on the same broken evidence as 8.5 -- silence at `debug_level 2`
+-- so it does not stand. More importantly it no longer matters: `extbuf` was only
+ever wanted as *a way to draw without the compositor*, and there is a better one.
+`/dev/ebc` has an `mmap`, it hands back a full-size writable panel buffer, and
+`0x7006` switches the driver into the mode that reads it. Section 9 documents
+that path end to end.
 
-**Consequence for the lock screensaver (issue #14).** Both routes out of the
-SystemUI dead end are closed for now. What remains:
+**Consequence for the lock screensaver (issue #14).** No longer blocked on the
+driver. The remaining question is a framework one -- getting something to run at
+the right moment during the going-to-sleep transition -- not a "there is no way
+to put pixels on the panel" one.
 
-* find whatever *does* drive `extbuf` -- the `onyx_epdc_fb` device node has its
-  own ioctl handler distinct from `/dev/ebc`, and has not been examined
-* find what sets `pwrdown_delay`, since 0 means the panel powers down at once
-* accept the compositor route and work out why a composited frame did not reach
-  the panel: the overlay window *was* added and SurfaceFlinger *did* composite
-  six frames, yet no `waveform_clean` followed, so the loss is below
-  SurfaceFlinger and above the panel
+---
 
-The third is the most tractable and the least explored.
+## 9. Symbolising the running kernel
+
+Sections 1-8 worked in raw file offsets, because the kernel `Image` carries no
+symbol table. That constraint was self-imposed: the symbol table is available,
+just not in the file.
+
+### 9.1 The two halves
+
+`/proc/kallsyms` on the running device names every kernel address. It reads as
+all-zeros by default; `kptr_restrict` gates it and root can lower the gate.
+
+```sh
+adb root
+adb shell 'echo 0 > /proc/sys/kernel/kptr_restrict'
+adb shell 'cat /proc/kallsyms' > kallsyms.txt      # ~144k symbols
+```
+
+`_text` lands at `0xffffffa3f5e80000`, and the raw arm64 `Image` maps `_text` to
+file offset 0, so:
+
+```
+file_offset = kallsyms_address - 0xffffffa3f5e80000
+```
+
+**Check the base rather than trusting it.** `epdc_ioctl` resolves to `0x57a988`;
+disassembling there gives a clean prologue (`sub sp, sp, #0x110`) and, `0x2c`
+later, exactly the jump-table dispatch section 8.1 found by hand. Two independent
+derivations landing on the same byte is what makes the mapping trustworthy. [V]
+
+### 9.2 The kernel in `firmware/analysis/` is the wrong build
+
+The base above *fails* against `firmware/analysis/kernel.Image` -- `epdc_ioctl`
+lands mid-function, `0x80` off, and call targets resolve to nonsense like
+`max17135_resume+0x48`. That drift is not a bad base. It is two different
+kernels:
+
+| | git | build | date |
+|---|---|---|---|
+| running on the device | `g3d47a6619220` | **#245** | 2026-04-10 |
+| `firmware/analysis/kernel.Image` | `g8b1b2dc01cc9` | **#147** | 2025-12-26 |
+
+Compare `/proc/version` against `strings -a <image> | grep 'Linux version'`
+before doing anything with an extracted kernel. Two builds of the same driver
+have most functions at almost the same place, which is exactly what makes the
+mismatch hard to notice and easy to build wrong conclusions on.
+
+Extract the one that is actually running:
+
+```sh
+adb shell 'dd if=/dev/block/by-name/boot_b of=/data/local/tmp/boot_b.img bs=1M count=96'
+adb pull /data/local/tmp/boot_b.img && adb shell 'rm /data/local/tmp/boot_b.img'
+# header v2: kernel_size at +8, page_size at +36, kernel starts at page_size
+```
+
+`scripts/kdis.py` does the disassembly, resolving branch targets and `ADRP`+`ADD`
+pairs to names. It also has `-s <regex>` to search symbols and `-w <symbol>` to
+find callers.
+
+### 9.3 The complete ioctl table
+
+With exact offsets the jump table decodes without ambiguity:
+
+```
+sub  w8, w1, #0x7000
+cmp  w8, #0x11d              ; 286 entries
+adrp x9, 0x1923000 ; add x9, x9, #0x918
+adr  x10, 0x57a9e0
+ldrh w11, [x9, x8, lsl #1]
+add  x10, x10, x11, lsl #2 ; br x10
+
+target = 0x57a9e0 + u16_at(0x1923918 + (cmd - 0x7000) * 2) * 4
+```
+
+286 entries, 47 distinct targets, one of which is the default case shared by 240
+commands -- so **46 real commands**, in two ranges: `0x7000`-`0x7029` and
+`0x7118`-`0x711d`. The second range was missed entirely by the runtime probe. [D]
+
+Names recovered by walking each case's control-flow graph and collecting the
+message strings it can reach:
+
+| ioctl | name | notes |
+|---|---|---|
+| `0x7000` | `GET_EBC_BUFFER` | **never call -- blocks forever** |
+| `0x7001` | `SET_EBC_SEND_BUFFER` | |
+| `0x7002` | `GET_EBC_DRIVER_SN` | `ONYX_EBC_DRIVER_VERSION_2.00` |
+| `0x7003` | `GET_EBC_BUFFER_INFO` | |
+| `0x7004` | `SET_EBC_LUT_ENABLE` | changes display state |
+| `0x7006` | `SET_EBC_UPDATE_SCHEME` | **[V]** -- see 9.4 |
+| `0x7008` | `set waiting_for_all_lut_free` | |
+| `0x700a` | `set reagl_enable` | changes display state |
+| `0x700b` | `set force_waveform` | changes display state |
+| `0x700c` | `SET_EBC_SEND_UPDATE` | the working submit; also `HANDWRITE_UPDATE` |
+| `0x700f` | `SET_EBC_CLEAR_ALL_UPDATE` | |
+| `0x7010` | `SET_EBC_WAIT_ALL_UPDATE_COMPLETE` | |
+| `0x7013` | capture read (`from epd_buffer` / `from buf_gray`) | |
+| `0x7014` | `SET_EBC_GAMMA_TAB` | changes display state |
+| `0x7016` | `SET_EBC_UPD_LIST_SIZE` | prints `pwrdown_delay`, does not set it |
+| `0x7018` | `SET_EBC_CAPTURE_SRART` | (sic) allocates capture buffers |
+| `0x701b` | `SET_EBC_CAPTURE_STOP` | |
+| `0x701f` | `SET_EBC_EXTBUF_SYNC_FB_ENABLE` | [D] |
+| `0x7024` | `cut_frame_num` | must be 3..5; also in sysfs |
+| `0x7025` | transform / rotation | |
+| `0x7026` | `enable cfa mode` | changes display state |
+| `0x711b` | `GET_EBC_CAPTURE_ALL_NAME` | |
+| `0x711c` | `GET_EBC_CAPTURE_ALL_BUFFER` | read back what the panel shows |
+
+Still unnamed: `0x7007`, `0x7009`, `0x700d`, `0x700e`, `0x7011`, `0x7012`,
+`0x7015`, `0x7017`, `0x7019`, `0x701a`, `0x701c`-`0x701e`, `0x7020`-`0x7023`,
+`0x7027`, `0x7029`, `0x7118`-`0x711a`, `0x711d`. Their case bodies are reachable
+but print nothing that names them.
+
+### 9.4 Drawing without the compositor
+
+This is what sections 5, 8.4 and 8.7 were reaching for, and it works.
+
+**`/dev/ebc` has an mmap.** [V]
+
+```
+epdc_mmap @ 0x57e690:
+    vma->vm_flags &= ~0x3c ; |= 0x80000
+    if (g[0x2bb8] == NULL) { printk("no virt_buf_handwrite!"); return -1; }
+    return dma_buf_mmap(g[0x2bc8], vma, 0)
+```
+
+On the device it maps **5431808 bytes = 1648 x 824 x 4**, the driver logs
+`[virt_buf_handwrite] [system ion] size: 0x52f000`, the contents start as all
+`0xff`, and the memory is **writable from userspace**. It is the handwriting
+fast path's buffer, which is why nothing on the normal display path touches it.
+
+**The driver only reads it in scheme 3.** `onyx_epdc_scheme_is_handwrite()` at
+`0x5799f8` is exactly `g[0x2c50] == 3`, and the boot log says the driver starts
+at `upd_scheme[2]`. Switch with `0x7006`, passing a pointer to an `int`. While
+scheme 3 is set the driver **rejects ordinary updates**, so the compositor cannot
+paint -- switch back as soon as the frame is submitted.
+
+**An update must opt in via flags bit 18.** From `epdc_ioctl`, right after the
+struct is copied in:
+
+```
+bl   __arch_copy_from_user   ; dst = sp+0x40, len = 0x28   (40 bytes)
+ldr  w8, [sp, #0x60]         ; sp+0x40 + 0x20 -> byte 32 -> flags
+tbz  w8, #0x12, <reject>     ; bit 18 clear -> "reject non HANDWRITE update"
+```
+
+Byte 32 lands exactly on `flags` in the 40-byte layout, which independently
+confirms the struct. Without bit 18 the driver takes the ordinary path, sees
+scheme 3, and refuses -- observed verbatim on the first attempt:
+
+```
+epdc_ioctl(): ERROR! Now is SCHEME_HANDWRITE, reject non HANDWRITE update!!
+  SET_EBC_SEND_UPDATE -- magic[18519] [x=0 y=0 w=1648 h=824]!waveform[2] flags[0x31000]
+```
+
+With `flags = 0x31000 | 0x40000` the rejection stops and the driver advances its
+frame counter. `src/ebchandwrite.c` is the whole sequence; it restores the scheme
+on every exit path.
+
+**The buffer is in output space, and is not rotated.** [V] Filling it with bands
+that vary along buffer-`y` produces bands that read as horizontal with the device
+held in **landscape**. So the mapping is one-to-one onto the panel as 1648 wide
+by 824 tall, with no transform of the driver's own.
+
+Everything else in this project authors content in **layer-stack space**, which
+is portrait 824 x 1648 (`docs/19`) -- including `scripts/gen-screensaver.py`. So
+content written through this path has to be turned a quarter turn on the way in.
+`src/ebcshow.c` does that; the correct angle is **270**, established by looking
+at the panel. [V]
+
+Both 90 and 270 produce a correctly proportioned frame that fills the panel, so
+nothing about the geometry distinguishes them and no amount of reasoning about
+buffer strides will -- 90 simply comes out upside down. This is the opposite of
+the usual trap: the compositor path hides the rotation entirely, and this one
+does not.
+
+### 9.4.2 The first handwrite update always ghosts
+
+A single GC16 pass leaves the previous screen clearly visible through the new
+one. Confirmed on the panel, and it is not a coverage problem -- the driver
+reports the update it ran as `[l=0 t=0 w=1648 h=824]` (section 9.4.1). Nor is it
+the compositor repainting: it persists for as long as scheme 3 is held, with
+ordinary updates rejected the whole time.
+
+The cause is state tracking: the driver drives each pixel as a **transition from
+what it believes is currently displayed**, and after the compositor has been
+drawing, its belief is wrong.
+
+**The fix is to flash the panel, and only that works.** [V] Drive every pixel to
+full black, then to full white, then to the image -- three full-panel passes
+inside one hold of scheme 3. `src/ebcshow.c` does this by default and it removes
+the ghosting completely. Cost is roughly 1.1s and it is visibly ugly, which is
+fine at screen-off and wrong for anything frequent.
+
+Three cheaper things were tried on the panel and **all three still ghost**:
+
+| attempt | what it touches | result |
+|---|---|---|
+| `0x701d` sync from framebuffer | the source buffer | ghosts |
+| `panel_clean` sysfs | cleans via the normal path | ghosts |
+| `cut_frame_num` 3 -> 5 | waveform length | ghosts, 33 frames either way |
+
+The sync result is the informative one, because it is not a case of the ioctl
+doing nothing. Stamping the whole mapping with `0xaa`, calling `0x701d`, and
+reading back shows **0% of the stamp survives** -- the driver genuinely rewrites
+the entire buffer from the live framebuffer. So before the update, the buffer and
+the glass agreed, and it ghosted anyway.
+
+**That rules out the obvious explanation.** The driver's transition source is
+*not* the buffer we mmap, so seeding that buffer cannot help however correct it
+is. An earlier revision of this section blamed the mmap'd buffer's stale contents
+and recommended the flash on that basis; the recommendation was right and the
+reasoning was wrong.
+
+What fits all four results is a **handwrite-specific record** of the displayed
+image, refreshed only by handwrite updates. Compositor drawing maintains a
+different one, `panel_clean` cleans through the normal path, and the sync writes
+the source rather than the record -- none of them reach it. Driving both rails
+*through the handwrite path itself* is the only thing that does, which is why the
+flash is not a workaround here but the actual mechanism.
+
+**The prediction that follows from it holds.** [V] If the record is
+handwrite-specific and only handwrite updates refresh it, then one flash should
+be enough and everything after it should be clean. Drawing one image with the
+flash and then a *different* image with `mode 0` -- no flash, no sync, no clean
+-- gives a clean second image with no trace of the first.
+
+So the flash is a **once-per-session** cost, not a per-frame one:
+
+* first handwrite draw after the compositor has been running -> flash (~1.1s,
+  visibly ugly, unavoidable)
+* every draw after that -> one pass, ~450ms, no flicker
+
+which is what makes this usable for anything that updates periodically rather
+than only for a single screensaver frame.
+
+**Consequences.** This is the missing primitive for the lock screensaver (#14),
+for a settle pass after motion, and for anything `epdcd` wants to draw on its
+own. It also explains issue #2 completely: `EBC_SEND_UPDATE` blanked the panel
+because the buffer it paints from was never written -- and now it can be.
+
+**Proof that the update is ours, not ambient activity.** The `frame[]` counter in
+`sysfs` gives a clean three-way control: [V]
+
+| condition | frames driven |
+|---|---|
+| idle, no update, 3s | 0 |
+| `flags = 0x31000` (bit 18 clear) | 0 |
+| `flags = 0x71000` (bit 18 set) | 33 |
+
+The idle row is what makes the other two mean anything -- without it, "33 frames"
+could have been the launcher redrawing.
+
+**Tools.** `src/ebcmmap.c` probes the mapping read-only. `src/ebchandwrite.c` is
+the minimal experiment. `src/ebcshow.c` is the usable form: it takes the 8-bit
+greyscale plane that `gen-screensaver.py OUT.raw` emits, rotates it, and shows
+it.
+
+### 9.4.1 `debug_level` is an integer of bit flags
+
+`echo 1..32` into `debug_level` does **not** enable the handwrite logging; the
+gate is bit 4 of the byte at `epdc_debug_level + 1`, so the value needed is
+`0x10 << 8`:
+
+```sh
+adb shell 'echo 4096 > /sys/devices/virtual/sepdc/debug/debug_level'
+```
+
+which produces the line that settles what the driver actually ran: [V]
+
+```
+epdc_ioctl(): HANDWRITE_UPDATE magic[68090369] handwrite_time[...]
+  waveform[2] flags[0x71000] [l=0 t=0 w=1648 h=824] !
+```
+
+Two things fall out of it. The rect is the **whole panel**, so the handwrite path
+is not clamping the update -- when the image looks like it is mixed with the old
+screen, that is the compositor repainting after scheme 2 is restored, not a
+coverage failure. And `magic` comes back as `68090369`, not the marker that was
+submitted: handwrite updates get `0x3e80000` added to the marker, matching
+`add w8, w8, #0x3e80000` in the case body. Anything waiting on a marker for a
+handwrite update has to expect the offset one.
+
+This is the same trap as section 8.5 seen from the other side. `debug_level` is
+named like a level and read like a level, and it is a **bit field**. Every
+"the driver logs nothing for this" conclusion in this document was reached by
+writing small numbers into it.
+
+### 9.5 Live pipeline state
+
+`/sys/devices/virtual/sepdc/debug/status` reports the pipeline directly:
+
+```
+epdctask_status[0] wf_status[99] wftask_wf_status[99] wftask_status[0]
+wb_status[30] wb_wf_status[0] cb_state[99] epdc_active_luts[0x0][0x0][0x0][0x0]
+all_frames_completed[0] frame[2075:2075:2075]
+```
+
+The three `frame[]` counters being equal means settled; they diverge while an
+update is in flight. That makes this both a health check and a way to prove an
+update was actually driven -- the handwrite probe moved it by 33-37 frames per
+full-panel GC16, which is how we know the update was accepted rather than
+silently dropped.
+
+`cut_frame_num` (default 3, valid 3..5) is writable here as well as via `0x7024`
+-- a waveform-length knob reachable without any ioctl at all, and an untried
+lever on the A2 flicker.
+
+---
+
+## 10. Crash recovery, and why the watchdog does not help
+
+Probing this driver has taken the device down repeatedly. One case rebooted
+itself; one sat unresponsive for **220 seconds**.
+
+That 220s has an explanation, and it is not "the watchdog is slow". The SoC
+watchdog is configured and working -- devicetree gives `qcom,bark-time = 0x2af8`
+(11000 ms) and `qcom,pet-time = 0x2490` (9360 ms) [T], so a genuinely dead kernel
+is reset in about 14 seconds. It took 220 because **the kernel was not dead**:
+only the display pipeline was stuck, and the petting thread kept running.
+
+Nothing in this kernel catches that shape of hang:
+
+| option | state |
+|---|---|
+| `CONFIG_DETECT_HUNG_TASK` | not set |
+| `CONFIG_SOFTLOCKUP_DETECTOR` | not set |
+| `CONFIG_WQ_WATCHDOG` | not set |
+| `CONFIG_WATCHDOG` | not set -- so no `/dev/watchdog` for userspace |
+| `CONFIG_MAGIC_SYSRQ` | **set**, runtime gate 0 |
+| `CONFIG_PSTORE_RAM` | set, `dump_oops=1` |
+
+None of the first four can be enabled at runtime. Two things can be done instead.
+
+**Turn on sysrq.** `echo 1 > /proc/sys/kernel/sysrq` gives crash-on-demand
+(`echo c`, which panics -> ramoops -> reboot in 5s since `panic=5`) and, more
+useful, `echo w` to dump every task in `D` state. The three EPD threads sit in
+`down()` when idle:
+
+```
+mdss_fb_epdc     D  515   mdss_mdp_epdc_thread+0x1cc
+epdc_refresh_wa  D  517   epdc_refresh_waveform_task+0xa4
+commit_epdc      D  521   mdss_commit_epdc_thread+0x90
+```
+
+Different offsets during a hang say which thread is stuck and where -- the
+diagnostic that was missing for the 220s incident.
+
+**Arm a userspace deadman.** `scripts/epd-deadman.sh arm 30` starts a detached
+timer that reboots unless disarmed; run the risky call between arm and disarm.
+It is `setsid`-detached, so losing the adb shell does not disarm it, and the
+disarm is a file check rather than a signal, so a failed `kill` cannot leave it
+armed by accident. Verified by letting it fire: uptime 1589s -> 22.8s.
+
+`scripts/epd-debug-arm.sh` sets all of this up; run it once per boot. Note
+`adb root` is needed and does **not** survive a reboot -- adbd comes back as
+`shell`, and several probe results were initially misread as permission failures
+because of it.
+
+**pstore already works.** `/sys/fs/pstore/console-ramoops-0` holds the previous
+boot's console across a reboot, and `dmesg-ramoops-0` appears after an oops. The
+console record is not ECC-protected (`ramoops.ecc=0`) and comes back with
+scattered single-bit corruption, so read it as mostly-legible text rather than
+something to grep exactly.
+
+### 10.1 `/dev/ebc` is world-writable
+
+```
+crw-rw-rw- 1 root root u:object_r:ebc_device:s0 10, 51 /dev/ebc
+```
+
+Any installed app can drive the panel, switch it into handwrite scheme, or hang
+it with `0x7000`. SELinux is permissive on this build, so the `ebc_device` label
+constrains nothing. Belongs with issue #5 (`ro.adb.secure=0`) as bring-up debt to
+pay down before this is a daily driver.
