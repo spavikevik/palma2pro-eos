@@ -1,0 +1,134 @@
+diff --git a/services/core/java/com/android/server/lights/LightsService.java b/services/core/java/com/android/server/lights/LightsService.java
+index 76cf1348d313..4cd4f076dec9 100644
+--- a/services/core/java/com/android/server/lights/LightsService.java
++++ b/services/core/java/com/android/server/lights/LightsService.java
+@@ -32,6 +32,7 @@ import android.os.Looper;
+ import android.os.PermissionEnforcer;
+ import android.os.RemoteException;
+ import android.os.ServiceManager;
++import android.os.SystemProperties;
+ import android.os.Trace;
+ import android.provider.Settings;
+ import android.util.Slog;
+@@ -42,6 +43,7 @@ import com.android.internal.annotations.VisibleForTesting;
+ import com.android.internal.display.BrightnessSynchronizer;
+ import com.android.internal.util.DumpUtils;
+ import com.android.internal.util.Preconditions;
++import com.android.internal.os.BackgroundThread;
+ import com.android.server.SystemService;
+ 
+ import java.io.FileDescriptor;
+@@ -525,8 +527,113 @@ public class LightsService extends SystemService {
+         publishBinderService(Context.LIGHTS_SERVICE, mManagerService);
+     }
+ 
++    /**
++     * Mirror Android's screen brightness onto the e-ink frontlight.
++     *
++     * This device has no backlight. It has a frontlight: two independently driven LED
++     * strings exposed as sysfs backlight devices, each 0..32:
++     *
++     *     /sys/class/backlight/onyx_bl_br/brightness   cool string
++     *     /sys/class/backlight/onyx_bl_ct/brightness   warm string
++     *
++     * Nothing connects Android's brightness to them. The vendor lights HAL targets an LCD
++     * backlight this hardware does not have, and on this build no backlight light is
++     * registered at all -- dumpsys light is empty and DisplayPowerController reports
++     * mBacklight=null, with brightness going through the composer instead. So Settings and
++     * the Quick Settings slider moved Settings.System.SCREEN_BRIGHTNESS while both strings
++     * sat at 0: observed screen_brightness=255 with br=0, ct=0.
++     *
++     * An earlier attempt hooked LightImpl.setBrightness(), which is the legacy path and is
++     * never called here. Observing the setting instead is independent of whether brightness
++     * is applied via the lights HAL or the composer, which is why it is done this way.
++     *
++     * Fixing it in the HAL is not an option: it lives in the vendor partition, which this
++     * project never flashes.
++     *
++     * Warmth has no equivalent in Android's brightness model, so it rides on
++     * persist.sys.frontlight.warmth (0..32). Both are persist properties, so boot restore
++     * comes for free -- see issue #9.
++     */
++    private static final String EPDC_BL_BRIGHTNESS = "/sys/class/backlight/onyx_bl_br/brightness";
++    private static final String EPDC_BL_WARMTH = "/sys/class/backlight/onyx_bl_ct/brightness";
++
++    private void epdcApplyFrontlight() {
++        try {
++            final int max = SystemProperties.getInt("persist.sys.frontlight.max", 32);
++            final int brightnessInt = android.provider.Settings.System.getInt(
++                    getContext().getContentResolver(),
++                    android.provider.Settings.System.SCREEN_BRIGHTNESS, 0);
++
++            // Map SLIDER POSITION, not the stored value, onto the panel's steps.
++            //
++            // Settings.System.SCREEN_BRIGHTNESS is linear in luminance, but the brightness
++            // slider is not: it converts its position through a gamma curve before storing,
++            // so that dragging it feels perceptually even. Mapping the stored value straight
++            // onto 0..max applies a second, opposite curve -- the panel then changes almost
++            // nothing across the bottom half of the slider and jumps in large steps near the
++            // top. Reported as "the slider percentage is skewed and not uniformly
++            // distributed", and that is exactly what it was.
++            //
++            // convertLinearToGamma() is the inverse of what the slider applies, so this
++            // recovers the slider position in 0..1 and maps that uniformly instead. With
++            // only 33 hardware steps the difference is very visible at the low end, which is
++            // where reading brightness actually gets used.
++            final float linear = Math.max(0f, Math.min(1f, brightnessInt / 255f));
++            final float sliderPos = com.android.internal.display.BrightnessUtils
++                    .convertLinearToGamma(linear);
++            int level = Math.round(sliderPos * max);
++            // Any non-zero request must light the panel: rounding to 0 would make the first
++            // part of the slider travel do nothing at all.
++            if (level == 0 && brightnessInt > 0) {
++                level = 1;
++            }
++            if (level < 0) {
++                level = 0;
++            } else if (level > max) {
++                level = max;
++            }
++            epdcWriteSysfs(EPDC_BL_BRIGHTNESS, level);
++
++            // Warmth follows brightness to zero, so "off" is genuinely dark.
++            final int warmth = SystemProperties.getInt("persist.sys.frontlight.warmth", 0);
++            epdcWriteSysfs(EPDC_BL_WARMTH, level == 0 ? 0 : Math.max(0, Math.min(max, warmth)));
++        } catch (Exception e) {
++            // A frontlight that cannot be driven must never take down system_server.
++        }
++    }
++
++    private void epdcWriteSysfs(String path, int value) {
++        try (java.io.FileOutputStream out = new java.io.FileOutputStream(path)) {
++            out.write(Integer.toString(value).getBytes());
++        } catch (Exception e) {
++            // Node absent on non-Onyx hardware, or unwritable. Not fatal.
++        }
++    }
++
++    private void epdcStartFrontlightBridge() {
++        if (!new java.io.File(EPDC_BL_BRIGHTNESS).exists()) {
++            return;   // not this hardware
++        }
++        final android.database.ContentObserver observer =
++                new android.database.ContentObserver(BackgroundThread.getHandler()) {
++                    @Override
++                    public void onChange(boolean selfChange) {
++                        epdcApplyFrontlight();
++                    }
++                };
++        getContext().getContentResolver().registerContentObserver(
++                android.provider.Settings.System.getUriFor(
++                        android.provider.Settings.System.SCREEN_BRIGHTNESS),
++                false, observer, android.os.UserHandle.USER_ALL);
++        // Apply once at boot so the panel matches the stored brightness.
++        epdcApplyFrontlight();
++    }
++
+     @Override
+     public void onBootPhase(int phase) {
++        if (phase == PHASE_SYSTEM_SERVICES_READY) {
++            epdcStartFrontlightBridge();
++        }
+     }
+ 
+     private int getVrDisplayMode() {
