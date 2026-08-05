@@ -192,18 +192,32 @@ build)
             cd $BUILDER_TREE
             source build/envsetup.sh >/dev/null
             lunch $BUILDER_LUNCH
-            # Cap the memory-hungry ninja pool (r8, d8, javac, turbine).
+            # Two caps, because one is not enough on this host.
             #
-            # A droid build died here with \"ninja failed with: signal: killed\"
-            # at 3%: the kernel OOM-killed it while 35 r8 JVMs were live, each
-            # started with -JXmx4096M. That is ~140 GB of heap ceiling against
-            # 46 GB of RAM. AOSP sizes this pool itself when the variable is
-            # unset, and its estimate is far too optimistic for this host.
+            # A droid build died three times with
+            #     ninja failed with: signal: killed
+            # OOM-killed within minutes of ninja starting.
             #
-            # Ninja pools each job by its own accounting, so this only throttles
-            # the JVM-heavy steps; ordinary compilation keeps full parallelism.
+            # NINJA_HIGHMEM_NUM_JOBS caps soong's \"highmem\" pool, and it works
+            # -- the generated ninja file carries \"pool highmem_pool / depth =
+            # 6\". But it governs r8 and friends only. javac is NOT in that pool,
+            # so it runs at full ninja parallelism, and javac is a JVM too. A
+            # failed build was caught with 27 live JVMs: 13 r8 AND 12 javac,
+            # nearly all -Xmx4096M. Against 46 GB of RAM that is roughly 100 GB
+            # of heap ceiling, and no per-pool cap can fix it because the two
+            # pools are counted separately.
+            #
+            # So total ninja parallelism is capped as well. This host has 16
+            # cores, and ninja would default to about 18 concurrent jobs; 10
+            # keeps the worst case near 30 GB while losing little on the
+            # non-JVM steps, which are the overwhelming majority.
+            #
+            # Raising _JAVA_OPTIONS instead was considered and rejected: it
+            # applies to every JVM the build starts and prints a \"Picked up
+            # _JAVA_OPTIONS\" line to stderr that some build steps parse as
+            # output. builder.env unsets it deliberately for that reason.
             export NINJA_HIGHMEM_NUM_JOBS=${HIGHMEM_JOBS:-6}
-            m $target
+            m -j${BUILD_JOBS:-10} $target
         ' > $BUILD_LOG 2>&1 &
         echo \"build '$target' started, pid \$!\"
         echo \"log: $BUILD_LOG\"
