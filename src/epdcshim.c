@@ -282,6 +282,25 @@ static long now_ms(void);   /* defined below, with the other tunable helpers */
  */
 #define EBC_DEVICE           "/dev/ebc"
 #define EBC_SEND_UPDATE      0x700c
+/* The handwriting path -- what makes a settle actually show something.
+ *
+ * EBC_SEND_UPDATE alone repaints from a driver buffer nothing in our stack
+ * writes, so it faithfully paints white. That is issue #2, and it is why this
+ * whole pass was disabled. The missing pieces, all established in docs/22 9.4:
+ *
+ *   0x7006 scheme=3   SCHEME_HANDWRITE, the only mode that reads virt_buf_handwrite
+ *   0x701d            copy the LIVE framebuffer into that buffer -- no compositor
+ *                     involved, and no commit needed from the app
+ *   flags bit 18      or the driver rejects the update outright
+ *
+ * 0x701d is time-gated: it returns early unless fb_update_time is newer than
+ * handwrite_time. Setting the scheme with 0x7006 refreshes fb_update_time,
+ * which is why it has to come first. */
+#define EBC_UPDATE_SCHEME    0x7006
+#define EBC_SYNC_FROM_FB     0x701d
+#define SCHEME_NORMAL        2
+#define SCHEME_HANDWRITE     3
+#define EPDC_FLAG_HANDWRITE  0x40000
 
 struct ebc_upd {
     i32 rect[4];
@@ -347,8 +366,22 @@ static void settle_now(void)
      * and harder to reproduce. This runs on the settle thread while the commit
      * path runs on the composer's, hence the atomic. */
     u.update_marker = next_marker(1);
-    u.flag          = t_flag;
-    p_ioctl(fd, EBC_SEND_UPDATE, &u);
+    u.flag          = t_flag | EPDC_FLAG_HANDWRITE;
+
+    /* Enter handwrite scheme, seed the buffer from what is actually on screen,
+     * draw it, and hand the display straight back.
+     *
+     * While scheme 3 is set the driver REJECTS ordinary updates, so the
+     * compositor cannot paint. That window is kept to a single update, and the
+     * scheme is restored on every path out -- leaving it set would freeze the
+     * display for the compositor entirely. */
+    int scheme = SCHEME_HANDWRITE;
+    if (p_ioctl(fd, EBC_UPDATE_SCHEME, &scheme) == 0) {
+        p_ioctl(fd, EBC_SYNC_FROM_FB, 0);
+        p_ioctl(fd, EBC_SEND_UPDATE, &u);
+        scheme = SCHEME_NORMAL;
+        p_ioctl(fd, EBC_UPDATE_SCHEME, &scheme);
+    }
     if (p_close) p_close(fd);
 }
 
@@ -774,6 +807,14 @@ int drmModeAtomicCommit(int fd, void *req, u32 flags, void *user_data)
         if (dt_commit >= 0 && dt_commit < t_defer
             && (t_defermax <= 0 || ++deferred_frames < t_defermax)) {
             defer_pending = 1;
+            /* Arm the settle thread. It is what actually draws in this mode:
+             * it waits for quiet and then paints the settled frame through the
+             * handwrite path, needing no further commit from the app. Without
+             * this the suppressed frames would never be drawn at all -- which
+             * is exactly the page turn that rendered nothing in the previous
+             * attempt. */
+            g_settle_pending = 1;
+            start_settle_thread();
             n_pend = 0;
             return real_commit(fd, req, flags, user_data);
         }
