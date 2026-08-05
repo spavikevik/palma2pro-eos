@@ -136,6 +136,11 @@ static i32 next_marker(int n)
  *   persist.epdcshim.upd       update_mode
  *   persist.epdcshim.flag      hex, e.g. 0x21000
  *   persist.epdcshim.interval  ms between injections; 0 = every commit
+ *   persist.epdcshim.defer     ms of quiet before drawing; while commits keep
+ *                              arriving faster than this, nothing is submitted,
+ *                              so an animation never reaches the panel and only
+ *                              its final frame does. 0 = off
+ *   persist.epdcshim.defermax  frames to suppress before forcing one
  */
 #define RECHECK 30
 static int t_enable   = 1;
@@ -169,6 +174,14 @@ static int t_dither;
  * additive overlay laid down is an empirical question, not a known one. */
 static int t_cleanmode = 1;
 static int fast_frames;   /* consecutive frames drawn with t_fastwf          */
+
+/* Page-turn mode. See the comment in init_parms: while moving, submit nothing,
+ * so a slide animation never reaches the panel and only its final state does. */
+static int t_defer;       /* ms of quiet required before drawing; 0 = off     */
+static long last_commit_ms;   /* every commit, not just injected ones          */
+static int defer_pending;     /* content changed while we were suppressing     */
+static int t_defermax = 90;  /* let one through after this many suppressed    */
+static int deferred_frames;
 static int commits_since_recheck = RECHECK;   /* force a read on first commit */
 static long last_inject_ms;
 static int updates_since_full;
@@ -476,6 +489,8 @@ static void refresh_tunables(void)
     t_fastwf   = (int)prop_num("persist.epdcshim.fastwf", 0);
     t_fastms   = (int)prop_num("persist.epdcshim.fastms", 250);
     t_fastclean= (int)prop_num("persist.epdcshim.fastclean", 6);
+    t_defer    = (int)prop_num("persist.epdcshim.defer", 0);
+    t_defermax = (int)prop_num("persist.epdcshim.defermax", 90);
     t_temp     = (int)prop_num("persist.epdcshim.temp", 0);
     t_dither   = (int)prop_num("persist.epdcshim.dither", 0);
     t_cleanmode= (int)prop_num("persist.epdcshim.cleanmode", 1);
@@ -534,6 +549,36 @@ static int init_parms(long dt_ms, const struct epdc_damage_rect *dmg, int n_dmg,
      * The end-of-motion flash rides the first commit that arrives after the
      * scroll stops. If nothing ever commits again the trail survives until
      * something does -- t_fastclean is the bound on how bad that can get. */
+    /* Page-turn mode: draw the destination, never the journey.
+     *
+     * A real Kindle does not animate a page turn -- the old page is there, then
+     * the new one is. The Android app slides instead, and on e-ink that costs
+     * about 46 panel updates for one turn, each of them a frame of a picture
+     * nobody wants to see.
+     *
+     * It cannot be turned off in the app. Android's animation scales are
+     * already 0 here and the slide continues, so it is not driven by platform
+     * animators but by the app's own frame loop, and no preference in its
+     * shared_prefs controls it.
+     *
+     * So it is suppressed here instead: while frames are arriving quickly,
+     * submit NOTHING. The panel simply holds the old page. When motion stops,
+     * the existing end-of-motion branch below flashes once, and that flash
+     * carries whatever is on screen by then -- the settled page.
+     *
+     * KNOWN FAILURE MODE, and it is why this is off by default. The end-of-
+     * motion flash rides the next commit that arrives after the burst. If an
+     * app ends a page turn and then commits nothing at all, the panel keeps
+     * showing the old page until something else happens -- a tap that appears
+     * to do nothing. t_defermax bounds that: after this many suppressed frames
+     * one is allowed through regardless, so the worst case is a late redraw
+     * rather than a stuck one.
+     *
+     * Deliberately not app-aware. The shim cannot see which app is in front;
+     * per-app policy is set from outside by writing these properties when the
+     * foreground app changes, which is what eink-appwatch.sh does and what the
+     * epdcd daemon is meant to take over.
+     */
     const int moving = (t_fastwf > 0 && dt_ms >= 0 && dt_ms < t_fastms);
 
     if (moving) {
@@ -554,6 +599,7 @@ static int init_parms(long dt_ms, const struct epdc_damage_rect *dmg, int n_dmg,
         }
     } else if (fast_frames > 0) {
         fast_frames = 0;
+        deferred_frames = 0;
         wf = t_wf;
         upd = t_cleanmode;
         force_full = 1;
@@ -596,13 +642,12 @@ static int init_parms(long dt_ms, const struct epdc_damage_rect *dmg, int n_dmg,
          * sharing a marker collide with each other exactly the way successive
          * commits used to, leaving the panel mid-waveform. Harmless while
          * n_dmg was always 1; a latent blank-screen bug the moment it is not. */
-        g_parms[i].update_marker = g_marker + i;
+        g_parms[i].update_marker = base + i;
         g_parms[i].flag          = t_flag;
         g_parms[i].temp          = t_temp;
         g_parms[i].dither_mode   = t_dither;
     }
     n = n ? n : 1;
-    g_marker += n;
     return n;
 }
 
@@ -707,6 +752,39 @@ int drmModeAtomicCommit(int fd, void *req, u32 flags, void *user_data)
     long t  = now_ms();
     long dt = last_inject_ms ? t - last_inject_ms : -1;
 
+    /* Page-turn mode.
+     *
+     * Measured against COMMIT arrival, not against the last injected update,
+     * and evaluated before the interval throttle. That matters: the throttle
+     * drops commits without advancing last_inject_ms, so dt there is always at
+     * least t_interval. With interval >= fastms the motion test can never be
+     * true, and an earlier version of this put the check inside init_parms
+     * where it silently never fired -- identical frame counts with it on and
+     * off, which is how it was caught.
+     *
+     * While commits keep arriving inside t_defer ms of each other the content
+     * is animating, so submit nothing: the panel holds the previous page and
+     * the slide happens entirely in the framebuffer. The first commit that
+     * arrives after a gap draws once, as a full flash, and by then the frame
+     * is the settled page. */
+    long dt_commit = last_commit_ms ? t - last_commit_ms : -1;
+    last_commit_ms = t;
+
+    if (t_defer > 0) {
+        if (dt_commit >= 0 && dt_commit < t_defer
+            && (t_defermax <= 0 || ++deferred_frames < t_defermax)) {
+            defer_pending = 1;
+            n_pend = 0;
+            return real_commit(fd, req, flags, user_data);
+        }
+        if (defer_pending) {
+            /* Quiet again (or the bound was hit): draw the settled frame. */
+            defer_pending = 0;
+            deferred_frames = 0;
+            dmg_full = 1;              /* full flash, clears the old page */
+        }
+    }
+
     if (t_interval > 0 && dt >= 0 && dt < t_interval) {
         n_pend = 0;
         return real_commit(fd, req, flags, user_data);
@@ -714,6 +792,17 @@ int drmModeAtomicCommit(int fd, void *req, u32 flags, void *user_data)
     last_inject_ms = t;
 
     int n_rect = init_parms(dt, dmg, n_dmg, dmg_full);
+
+    /* Page-turn mode asked for this frame to be dropped. Let the composer's
+     * own commit through untouched -- without our two properties the kernel
+     * iterates zero rectangles and copies nothing, so the panel holds what it
+     * already had. That is the whole trick: the animation runs in the
+     * framebuffer, and none of it reaches the glass. */
+    if (n_rect < 0) {
+        n_pend = 0;
+        return real_commit(fd, req, flags, user_data);
+    }
+
     g_settle_pending = 1;
     start_settle_thread();
 
