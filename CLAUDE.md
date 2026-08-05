@@ -32,6 +32,18 @@ into anything you do not control.
 — proven three times, including with SurfaceFlinger and composer both stopped.
 Nothing logged. Needs hard power cycle.
 
+**Never sweep unknown ioctls in a batch.** `0x701a` panics kernel — reads capture
+buffer that only exists after `CAPTURE_START` (`0x7018`); hardened usercopy
+`BUG()`s on invalid object. Fourteen commands in one loop died with no output;
+only pstore backtrace identified culprit. **One command per invocation, result
+recorded on host before next.** Per-process `timeout` protects userspace hang,
+does nothing about kernel BUG. Probe with **zero** payload, never distinctive
+value — `4321` sweep inverted panel.
+
+**`/dev/ebc` is `crw-rw-rw-`, SELinux permissive.** Any installed app can drive
+panel, switch it to handwrite scheme, or panic device with one ioctl and no
+permission. Unprivileged local DoS. Tracked with issue #5.
+
 ---
 
 ## Before you believe a symptom
@@ -70,6 +82,31 @@ wins, nothing logged when one loses. /e/OS ships launcher overlay at priority
 100; ours needed 1000.
 
 ---
+
+## When device wedges
+
+**Panic reboots work.** `panic=5` + `panic_on_oops=1` set by init, survive
+reboot. Kernel panic self-recovers in ~5 s; `sys.boot.reason` reads
+`kernel_panic,bug`. Do not tell user to power-cycle before checking — device
+usually comes back.
+
+**pstore keeps the evidence.** `/sys/fs/pstore/console-ramoops-0` holds previous
+boot's console across reboot. Bit-corrupted (`ramoops.ecc=0`) but legible; how
+`0x701a` was identified. `dmesg-ramoops-0` appears after an oops.
+
+**SoC watchdog does not help display hangs.** bark 11 s, bite ~14 s, but a stuck
+display pipeline keeps petting it — one probe hung 220 s. `DETECT_HUNG_TASK`,
+`SOFTLOCKUP_DETECTOR`, `WQ_WATCHDOG`, `WATCHDOG` all compiled **out**; cannot be
+enabled at runtime.
+
+```sh
+scripts/epd-debug-arm.sh            # sysrq on, kptr_restrict off — run per boot
+scripts/epd-deadman.sh arm 30       # detached reboot unless disarmed
+echo w > /proc/sysrq-trigger        # which EPD thread is stuck, and where
+```
+
+**`adb root` does not survive reboot** — adbd returns as `shell`. Several probe
+results were first misread as permission failures because of it.
 
 ## Method that worked
 
@@ -132,8 +169,21 @@ adb shell 'service call SurfaceFlinger 1008 i32 1'
 ## Display facts you will need
 
 * Panel 1648×824, 16 grey levels. Refresh cost proportional to **area**.
-* Known-good: `wf 2` (GC16), `upd 0`, `flag 0x31000`. `EPD_AUTO` (0) and
-  `PART_GL16` (8) tried, look worse.
+* Known-good: `wf 2` (GC16), `upd 0`, `flag 0x31000`, `interval 150`, everything
+  else 0. No flash, glide present in Kindle but tolerable. Return here after any
+  refresh-policy experiment.
+* **`temp` and `dither_mode` are not read by the driver** — `persist.epdcshim.temp`
+  and `.dither` do nothing. `update_mode` is not read either. Only `waveform_mode`,
+  `update_marker` and `flags` matter. docs/19 §4.6, docs/22 §13.
+* **`a2` (waveform 6) is ADDITIVE** — lays each frame over the last without
+  clearing, so motion leaves several frames legible at once. Needs a full-drive
+  clean, or `fastwf 0` to avoid entirely.
+* Panel has Kaleido CFA hardware (`cfa_mode[1017]` in DT; enabling it tints the
+  flash green), but the loaded waveform lacks the colour modes: `gcc16[-1]
+  glrc16[-1]`. CFA enable is ioctl `0x7026` and its argument is **inverted** —
+  0 enables.
+* Content is authored portrait 824×1648; the panel buffer is landscape output
+  space. Rotate **270** (DT agrees: `sf_rotation[270]`).
 * `update_marker` **must be unique** per submission, or updates collide and
   panel blanks mid-waveform (`Waiting for update marker magic[1] complete`).
 * Every update currently **full-panel** because SurfaceFlinger publishes one

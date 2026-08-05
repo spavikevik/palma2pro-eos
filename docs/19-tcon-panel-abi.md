@@ -272,16 +272,39 @@ presents as a ghosting/quality problem. The `0x10000` bit is **not decoded**;
 `0x31000` is simply what stock does. `0x21000` returns rc=0 and `0x31000`
 returns rc=1148 from the ioctl, so the bit demonstrably changes behaviour.
 
-### 4.6 `temp` **[unknown]** -- but see docs/22
+### 4.6 `temp` and `dither_mode` **[D] -- the driver does not read them**
 
 NXP's i.MX EPDC uapi, which this struct matches field for field, defines
-`TEMP_USE_AMBIENT = 0x1000`. That makes a plain `0` plausibly *0 degrees C* --
-the coldest waveform band -- rather than "driver decides". Now tunable via
-`persist.epdcshim.temp`; `4096` is accepted. Visual effect unconfirmed.
-
-The field at `+0x24` we recorded as `reserved` is i.MX's **`dither_mode`**
-(0 off, 1 Floyd-Steinberg, 2 Atkinson, 3 ordered, 4 quantise-only), now
+`TEMP_USE_AMBIENT = 0x1000`, and the field at `+0x24` we recorded as `reserved`
+is i.MX's **`dither_mode`** (0 off, 1 Floyd-Steinberg, 2 Atkinson, 3 ordered,
+4 quantise-only). Both are exposed as `persist.epdcshim.temp` and
 `persist.epdcshim.dither`.
+
+**Neither appears to do anything on this driver.** Counting loads at each field's
+known stack offset through `epdc_ioctl`, and through
+`__onyx_epdc_buf_put_queue()` which receives the struct as argument 5:
+
+| field | offset | reads | verdict |
+|---|---|---|---|
+| `waveform_mode` | +0x10 | many | live |
+| `update_mode` | +0x14 | **none** | not read |
+| `update_marker` | +0x18 | many | live |
+| `temp` | +0x1c | **none** | not read |
+| `flags` | +0x20 | many | live |
+| `dither_mode` | +0x24 | 1, behind `flags == 2` | unreachable for us |
+
+So "`4096` is accepted" -- the earlier note here -- was true and misleading: it is
+accepted because it is **ignored**, which is also why its visual effect could
+never be confirmed. `update_mode` being unread means the i.MX `PARTIAL`/`FULL`
+distinction does not exist here either; everything is decided by `waveform_mode`
+and `flags`.
+
+The `dither_mode` site is guarded by `flags == 2` and we send `0x31000`, so it
+never runs. Caveat on that one: the pointer was tracked through `mov` aliases,
+which is not sound, and at that site `flags` is compared against `0xff`/`2`/`0xf`
+-- not plausible for a field we send as `0x31000` -- so the register may point at
+an internal queue entry rather than the user's struct. The `temp` and
+`update_mode` negatives hold under any aliasing. See `docs/22` section 13.
 
 See `docs/22-kernel-driver-internals.md` for the driver's full ioctl surface,
 its sysfs debug controls, and the `extbuf` out-of-band image path.
