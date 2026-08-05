@@ -54,8 +54,7 @@
 
 #define EBC_DEVICE_PATH     "/dev/ebc"
 #define EBC_SYNC_FROM_FB    0x701d
-#define EBC_WAIT_COMPLETE   0x7010   /* waits for EVERY update in flight */
-#define EBC_WAIT_MARKER     0x700d   /* waits for ONE marker -- what we want */
+#define EBC_WAIT_COMPLETE   0x7010
 #define EBC_UPDATE_SCHEME   0x7006
 #define EBC_SEND_UPDATE     0x700c
 
@@ -114,31 +113,6 @@
 #define PROP_MAX    "persist.sys.frontlight.max"
 #define WARMTH_DEFAULT 32
 
-/* Clearing rails before the artwork.
- *
- * Driving every pixel to black then white makes the driver's stale record of
- * the displayed image irrelevant, which is what stops the previous screen
- * ghosting through. It costs two extra full-panel updates -- about 1.2s of the
- * screensaver's 1.9s -- and it visibly flashes.
- *
- * TESTED WITH THEM OFF, AND THEY EARN THEIR KEEP -- but not for the reason they
- * were added. With the buffer seeded from the live framebuffer via 0x701d
- * instead, the artwork does NOT ghost. It comes out washed out: blacks are not
- * black and whites are not white.
- *
- * That is the rails' real job. They are not only an anti-ghosting trick, they
- * set CONTRAST. Saturating every pixel to both extremes means the image is then
- * driven from a known state to its target, so it reaches true black and true
- * white. Without it each pixel transitions from wherever it happened to be and
- * the range compresses.
- *
- * So the cost is not avoidable by seeding the buffer, and the earlier guess
- * that the rails were merely redundant was wrong. They are also NOT the time
- * cost: measured 3.22s with them and 3.21s without, no difference.
- *
- * 0 skips them: faster in principle, visibly flatter in practice. Default 1. */
-#define PROP_CLEAR "persist.sys.epdc.screensaver_clear"
-
 /* Fallback only. Prefer wait_complete(): a fixed sleep is either too long --
  * which is what made the screensaver take 2-3s and the wake refresh a couple of
  * seconds, three and one of these respectively -- or too short, which races the
@@ -150,23 +124,9 @@
  * SET_EBC_WAIT_ALL_UPDATE_COMPLETE. The driver has its own timeout on this
  * ("Timed out waiting for update marker"), so it cannot hang here
  * indefinitely. Falls back to the fixed sleep if the call is refused. */
-static void wait_marker(int f, int32_t marker)
+static void wait_complete(int f)
 {
-    /* Wait for OUR update, not for every update in flight.
-     *
-     * 0x7010 (WAIT_ALL_UPDATE_COMPLETE) was used first and is the wrong call:
-     * it inherits whatever the compositor still has queued, so the wait length
-     * depends on unrelated work. That fit the symptoms exactly -- --refresh was
-     * fast at wake, when little is pending, and the screensaver slow at sleep,
-     * when plenty is.
-     *
-     * 0x700d takes a pointer to a single 4-byte marker (confirmed from the
-     * case body: a 4-byte copy_from_user) and waits only for that one. The
-     * driver has its own timeout, so this cannot hang.
-     *
-     * A marker of 0 means the submit failed; there is nothing to wait for. */
-    if (marker == 0) return;
-    if (ioctl(f, EBC_WAIT_MARKER, &marker) != 0)
+    if (ioctl(f, EBC_WAIT_COMPLETE, 0) != 0)
         usleep(PASS_MS * 1000);
 }
 
@@ -218,7 +178,7 @@ static int32_t next_marker(void)
     return (int32_t)(((getpid() & 0x3fff) << 8) | (++n & 0xff)) | 1;
 }
 
-static int32_t send_full(int wf)
+static int send_full(int wf)
 {
     struct upd u;
     memset(&u, 0, sizeof u);
@@ -229,8 +189,7 @@ static int32_t send_full(int wf)
     u.update_marker = next_marker();
     u.temp = 0x1000;                   /* TEMP_USE_AMBIENT */
     u.flags = EPDC_FLAG_STOCK | EPDC_FLAG_HANDWRITE;
-    if (ioctl(fd, EBC_SEND_UPDATE, &u) != 0) return 0;
-    return u.update_marker;
+    return ioctl(fd, EBC_SEND_UPDATE, &u);
 }
 
 static void blit(uint32_t *dst, const unsigned char *src, int channels)
@@ -345,12 +304,11 @@ static int refresh_from_fb(void)
     }
     if (ioctl(fd, EBC_SYNC_FROM_FB, 0) != 0)
         fprintf(stderr, "epdc-screensaver: sync: %s (continuing)\n", strerror(errno));
-    int32_t m = send_full(2);
-    if (m == 0) {
+    if (send_full(2) != 0) {
         fprintf(stderr, "epdc-screensaver: refresh: %s\n", strerror(errno));
         rc = 1;
     }
-    wait_marker(fd, m);
+    wait_complete(fd);
 out:
     set_scheme(SCHEME_NORMAL);
     close(fd);
@@ -428,24 +386,18 @@ int main(int argc, char **argv)
      * so the ~1.1s and the visible flashing cost nothing here.
      */
     static const uint32_t rails[2] = { 0xff000000u, 0xffffffffu };
-    int do_rails = prop_int(PROP_CLEAR, 1);
-    for (int pass = 0; do_rails && pass < 2; pass++) {
+    for (int pass = 0; pass < 2; pass++) {
         for (size_t i = 0; i < (size_t)PANEL_W * PANEL_H; i++) dst[i] = rails[pass];
-        int32_t m = send_full(2);
-        if (m == 0) break;
-        wait_marker(fd, m);
+        if (send_full(2) != 0) break;
+        wait_complete(fd);
     }
-
-    if (!do_rails)
-        ioctl(fd, EBC_SYNC_FROM_FB, 0);   /* same basis --refresh relies on */
 
     blit(dst, src, channels);
     free(src);
 
-    int32_t m = send_full(2);
-    if (m == 0)
+    if (send_full(2) != 0)
         fprintf(stderr, "epdc-screensaver: update: %s\n", strerror(errno));
-    wait_marker(fd, m);
+    wait_complete(fd);
 
     /* Warm the frontlight only once the artwork is actually up, so the light
      * does not shift while the clearing rails are still flashing. */
