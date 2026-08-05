@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  NTT DOCOMO (MCC 440, MNC 10) - enable VoLTE.
+
+  AOSP ships no carrier config for this operator, so CarrierConfigManager falls
+  back to defaults and carrier_volte_available_bool is false. That is why the
+  Enhanced 4G LTE toggle never appears.
+
+  HOW TO APPLY. CarrierConfig reads these from its own ASSETS, not from
+  resources, so a runtime resource overlay cannot deliver it. It has to be
+  copied into packages/apps/CarrierConfig/assets/ and the app rebuilt:
+
+      cp carrier_config_mccmnc_44010.xml \
+         packages/apps/CarrierConfig/assets/
+
+  ON ITS OWN THIS DOES NOT ENABLE VoLTE ON THIS DEVICE. See the note in
+  docs/23 - there is no ImsService implementation present, so the framework has
+  nothing to bind to regardless of what this file says.
+-->
+<carrier_config_list>
+  <carrier_config mcc="440" mnc="10">
+    <boolean name="carrier_volte_available_bool" value="true" />
+    <boolean name="carrier_volte_provisioning_required_bool" value="false" />
+    <boolean name="carrier_volte_tty_supported_bool" value="false" />
+    <boolean name="editable_enhanced_4g_lte_bool" value="true" />
+    <boolean name="hide_enhanced_4g_lte_bool" value="false" />
+    <boolean name="carrier_vt_available_bool" value="true" />
+    <boolean name="carrier_wfc_ims_available_bool" value="true" />
+    <boolean name="carrier_ims_gba_required_bool" value="false" />
+    <!-- DOCOMO uses IMS APN for VoLTE signalling. -->
+    <string name="carrier_config_version_string">palma2pro-eos-1</string>
+  </carrier_config>
+</carrier_config_list>

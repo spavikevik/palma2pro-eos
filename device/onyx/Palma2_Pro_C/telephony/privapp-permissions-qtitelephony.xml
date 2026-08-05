@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Privileged permission allowlist for com.qualcomm.qti.telephonyservice, the
+    stock QTI app whose QcRilAudioHidl class is the client for
+    vendor.qti.hardware.radio.am@1.0::IQcRilAudio. Optional: the build ships
+    QcRilAm instead. See scripts/extract-qti-telephony.sh and docs/23-volte.md.
+
+    WHY THIS FILE IS NEEDED AT ALL
+
+    Stock installs the APK to /system_ext/app, unprivileged, and it works there
+    because it is signed with Onyx's platform key and MODIFY_AUDIO_ROUTING is
+    signature|privileged. Our build has a different platform key, so the
+    signature half never matches and the app must earn the permission through
+    the privileged half instead. That means /system_ext/priv-app plus this
+    allowlist.
+
+    Without it, AudioManager.setAudioServerStateCallback throws
+
+        SecurityException: Not allowed to monitor audioserver state
+
+    inside AudioController's constructor. The field stays null, onCreate hits a
+    NullPointerException at QtiTelephonyService.java:109, and because the app is
+    android:persistent the framework restarts it forever.
+
+    Only MODIFY_AUDIO_ROUTING is listed. The app's other two permissions,
+    MODIFY_AUDIO_SETTINGS and RECEIVE_BOOT_COMPLETED, are normal and granted on
+    install.
+
+    NOTE ON XML COMMENTS: a literal double hyphen anywhere in a comment makes
+    this file unparseable. SystemConfig then drops the whole block while still
+    logging that it read the file, PackageManager throws at boot, and the device
+    loops. That cost one boot loop already. Validate with
+    scripts/check-device-xml.py before installing.
+-->
+<permissions>
+    <privapp-permissions package="com.qualcomm.qti.telephonyservice">
+        <permission name="android.permission.MODIFY_AUDIO_ROUTING"/>
+    </privapp-permissions>
+</permissions>

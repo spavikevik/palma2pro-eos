@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Privileged permissions for org.codeaurora.ims (QTI ImsService).
+
+  Extracted verbatim from an /e/OS 4.1.1 Android 15 build for Fairphone 4,
+  system_ext/etc/permissions/telephony_system-ext_privapp-permissions-qti.xml
+
+  ro.control_privapp_permissions is "enforce" here, so a privileged app
+  requesting a privileged permission absent from this list is refused by
+  PackageManager, and that is fatal at boot rather than a warning. Install
+  this file together with the APK, never after it.
+
+  NOTE: no literal double hyphen may appear in this comment. It is illegal
+  inside an XML comment, makes the file unparseable, and SystemConfig then
+  drops the block SILENTLY while still logging that it read the file. That
+  cost one boot loop.
+-->
+<permissions>
+<privapp-permissions package="org.codeaurora.ims">
+        <permission name="android.permission.MODIFY_PHONE_STATE"/>
+        <permission name="android.permission.READ_PRECISE_PHONE_STATE"/>
+        <permission name="android.permission.READ_PRIVILEGED_PHONE_STATE"/>
+        <permission name="android.permission.INTERACT_ACROSS_USERS"/>
+        <permission name="android.permission.SUBSTITUTE_NOTIFICATION_APP_NAME"/>
+        <permission name="android.permission.WRITE_SECURE_SETTINGS" />
+    </privapp-permissions>
+</permissions>

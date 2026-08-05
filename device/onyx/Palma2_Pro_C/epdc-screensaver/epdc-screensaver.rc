@@ -1,0 +1,53 @@
+# Paint the e-ink panel when the screen turns off.
+#
+# The trigger is debug.tracing.screen_state, which the framework sets on every
+# display state change for atrace: 2 while on, 1 once off. It is used here
+# because it needs no framework patch at all -- the alternative was hooking
+# KeyguardViewMediator or PowerManagerService, and three earlier attempts inside
+# SystemUI failed for reasons that have nothing to do with where the hook goes.
+#
+# The dependency is worth stating plainly: this is a debug.* property and is not
+# API. If a future release stops setting it, the screensaver silently stops
+# working -- it will not misbehave, it just will not run. If that happens, hook
+# Notifier.onWakefulnessChangeFinished() and set a property of our own instead.
+#
+# Deliberately started AFTER the screen is off rather than before. The panel is
+# driven through the driver's handwriting path, which does not need the
+# compositor and works with the display asleep, so there is nothing to race.
+
+service epdc_screensaver /system/bin/epdc-screensaver
+    class late_start
+    user system
+    group system graphics
+    oneshot
+    disabled
+    seclabel u:r:su:s0
+
+on property:debug.tracing.screen_state=1
+    start epdc_screensaver
+
+# And redraw the whole panel on wake.
+#
+# The screensaver paints through the handwrite path, so the driver's record of
+# what is displayed is the artwork. The lockscreen then composites through the
+# normal path with per-layer damage, updating only what changed -- and the
+# artwork remains visible everywhere else, so the lockscreen appears drawn on
+# top of the picture rather than replacing it.
+#
+# One full-panel redraw through the same handwrite path fixes it, because the
+# driver then computes the transition from the frame actually on the glass.
+service epdc_refresh /system/bin/epdc-screensaver --refresh
+    class late_start
+    user system
+    group system graphics
+    oneshot
+    disabled
+    seclabel u:r:su:s0
+
+on property:debug.tracing.screen_state=2
+    start epdc_refresh
+
+# Artwork lives here; gen-screensaver.py writes the pre-dithered planes.
+on post-fs-data
+    mkdir /data/misc/epdc 0771 system system
+    mkdir /data/misc/epdc/screensaver 0771 system system

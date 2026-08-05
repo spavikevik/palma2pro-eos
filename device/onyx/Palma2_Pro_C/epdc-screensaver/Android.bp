@@ -1,0 +1,17 @@
+// E-ink lock screensaver.
+//
+// A oneshot binary rather than framework code, because nothing composites at
+// lock time on this device -- see the comment at the top of the source and
+// docs/22 section 9.4.
+
+cc_binary {
+    name: "epdc-screensaver",
+    srcs: ["epdc-screensaver.c"],
+    cflags: [
+        "-Wall",
+        "-Werror",
+    ],
+    init_rc: ["epdc-screensaver.rc"],
+    // Nothing here needs a vendor interface; it talks to /dev/ebc directly.
+    proprietary: false,
+}

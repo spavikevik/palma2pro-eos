@@ -1,13 +1,106 @@
+diff --git a/services/surfaceflinger/CompositionEngine/include/compositionengine/epdc_damage.h b/services/surfaceflinger/CompositionEngine/include/compositionengine/epdc_damage.h
+new file mode 100644
+index 0000000000..af45622aca
+--- /dev/null
++++ b/services/surfaceflinger/CompositionEngine/include/compositionengine/epdc_damage.h
+@@ -0,0 +1,86 @@
++/*
++ * epdc_damage.h -- the contract between SurfaceFlinger and the composer shim.
++ *
++ * WHY THIS FILE EXISTS
++ * --------------------
++ * The kernel refreshes the EPD per update rectangle and takes up to 8 of them
++ * (a 320-byte array of 40-byte structs, see docs/11). Nothing in our stack
++ * supplies any, so `libepdcshim.so` currently submits one rectangle covering
++ * the whole panel on every commit. That works, but it repaints 1.36M pixels for
++ * a single changed character: slow, and partial waveforms ghost across the
++ * entire display instead of one small region.
++ *
++ * The damage is known -- SurfaceFlinger computes it every frame -- but there is
++ * no way to get it down to the kernel through the normal path:
++ *
++ *   - the DRM planes expose no FB_DAMAGE_CLIPS (property vocabulary dumped in
++ *     docs/11), so the shim cannot read damage from the atomic request
++ *   - client composition is mandatory on this panel, which collapses everything
++ *     into one full-screen plane whose CRTC rect is always the whole display
++ *   - Onyx's own route (app -> libgui hwc_epdc_llist -> their SF -> composer)
++ *     is a private transport that appears in no vendor library, so reproducing
++ *     it means reverse engineering an undocumented interface
++ *
++ * This sidesteps all of that: SurfaceFlinger publishes its dirty region into a
++ * small shared mapping, and the shim reads it. Both processes run as `system`,
++ * so a tmpfs file under /dev is sufficient.
++ *
++ * CONCURRENCY
++ * -----------
++ * Single writer (SurfaceFlinger), single reader (the composer), no locking:
++ * a seqlock. The writer bumps `seq` to an odd value, writes, then bumps it to
++ * even. The reader takes `seq` before and after and retries if it is odd or
++ * changed. A torn read is therefore never acted on, and neither side can block
++ * the other -- which matters because both sit on the frame path.
++ *
++ * `seq` doubles as a change detector: if it has not moved, SurfaceFlinger has
++ * not composited anything new and the panel must not be driven at all.
++ *
++ * COORDINATES
++ * -----------
++ * Rectangles must be in **output/framebuffer space** -- the same space as the
++ * plane the kernel blits, i.e. 1648x824 landscape -- not layer-stack space
++ * (824x1648 portrait). The display is installed rotated, so the writer has to
++ * apply the output transform before publishing. Publishing layer-stack
++ * coordinates would refresh the wrong region.
++ */
++
++#ifndef EPDC_DAMAGE_H
++#define EPDC_DAMAGE_H
++
++/* The shim is built freestanding (-nostdlib, target aarch64-linux-none) and has
++ * no stdint.h, so it defines the two types itself and sets this guard. Keeping
++ * one header for both sides is deliberate: the layout must not drift. */
++#ifndef EPDC_DAMAGE_NO_STDINT
++#include <stdint.h>
++#endif
++
++/* /dev itself is root-owned, so init must create this directory for
++ * SurfaceFlinger (uid system) to create the file in. See
++ * system/etc/init/epdc-clientcomp.rc. */
++#define EPDC_DAMAGE_DIR     "/dev/epdc"
++#define EPDC_DAMAGE_PATH    "/dev/epdc/damage"
++#define EPDC_DAMAGE_MAGIC   0x43504445u   /* 'EDPC' */
++#define EPDC_DAMAGE_VERSION 1u
++
++/* The kernel copies a fixed 320-byte array of 8 update structs; more than 8
++ * rectangles cannot be expressed, so the writer must merge down to this many. */
++#define EPDC_DAMAGE_MAX     8u
++
++struct epdc_damage_rect {
++    int32_t left, top, right, bottom;
++};
++
++struct epdc_damage_shm {
++    uint32_t magic;      /* EPDC_DAMAGE_MAGIC once initialised            */
++    uint32_t version;    /* EPDC_DAMAGE_VERSION                            */
++    uint32_t seq;        /* seqlock; odd = write in progress               */
++    uint32_t count;      /* valid rectangles, 0..EPDC_DAMAGE_MAX           */
++    uint32_t full;       /* writer asks for a full-panel refresh this frame */
++    uint32_t reserved[3];
++    struct epdc_damage_rect rect[EPDC_DAMAGE_MAX];
++};
++
++/* 8*4 + 8*16 = 160 bytes; a page is mapped and the rest left unused. */
++
++#endif /* EPDC_DAMAGE_H */
 diff --git a/services/surfaceflinger/CompositionEngine/src/Output.cpp b/services/surfaceflinger/CompositionEngine/src/Output.cpp
-index eac7fbd1d6..891c53041f 100644
+index eac7fbd1d6..0a9f09b21a 100644
 --- a/services/surfaceflinger/CompositionEngine/src/Output.cpp
 +++ b/services/surfaceflinger/CompositionEngine/src/Output.cpp
-@@ -27,6 +27,13 @@
+@@ -27,6 +27,14 @@
  #include <compositionengine/UdfpsExtension.h>
  #include <compositionengine/impl/HwcAsyncWorker.h>
  #include <compositionengine/impl/Output.h>
 +// EPD damage publication -- see docs/11 in the palma2pro-eos repo.
 +#include <compositionengine/epdc_damage.h>
++#include <unordered_map>
 +#include <cerrno>
 +#include <cstring>
 +#include <fcntl.h>
@@ -16,7 +109,7 @@ index eac7fbd1d6..891c53041f 100644
  #include <compositionengine/impl/OutputCompositionState.h>
  #include <compositionengine/impl/OutputLayer.h>
  #include <compositionengine/impl/OutputLayerCompositionState.h>
-@@ -1262,6 +1269,130 @@ void Output::devOptRepaintFlash(const compositionengine::CompositionRefreshArgs&
+@@ -1262,6 +1270,225 @@ void Output::devOptRepaintFlash(const compositionengine::CompositionRefreshArgs&
      prepareFrame();
  }
  
@@ -71,42 +164,137 @@ index eac7fbd1d6..891c53041f 100644
 +
 +
 +// ===========================================================================
-+// TASK (see docs/15-task-per-layer-damage.md in the palma2pro-eos repo)
++// Per-layer damage for the e-ink panel. See docs/15.
 +//
-+// Return the region the e-ink panel should refresh, in OUTPUT space.
++// Refresh cost on this panel is proportional to AREA, so the question this
++// function answers -- "what actually changed?" -- decides how the whole device
++// feels. Output::getDirtyRegion() answers a coarser question: it is the union
++// across every layer, so one sweeping clock hand comes back as the full panel
++// and 1.36M pixels get repainted for 30x50 of real change.
 +//
-+// The implementation below is CORRECT but COARSE: Output::getDirtyRegion() is
-+// the union of everything that changed across all layers, so a single sweeping
-+// clock hand or a blinking cursor comes back as a rectangle covering the whole
-+// panel -- and the panel then repaints all 1.36M pixels for 30x50 of actual
-+// change.
++// So walk the layers and ask each one. Three separate things require a
++// repaint, and missing any of them leaves stale pixels -- which on e-ink are
++// permanent, because there is no next scanout to correct them:
 +//
-+// Replace it with something finer. Everything downstream of this function --
-+// the shared mapping, the shim, the kernel's 8-rectangle array -- already works
-+// and does not need to change.
++//   1. contents changed     -> the layer's own surfaceDamage
++//   2. coverage changed     -> moved or resized: union of OLD and NEW coverage
++//   3. the layer went away  -> its LAST coverage, which only we still remember
 +//
-+// Measured on device with the baseline:
-+//     epdc: raw rects=1 bounds=[0 0 1648 824]
++// (2) and (3) are why "just union the surface damage" is not enough: a window
++// that moves without redrawing reports EMPTY surface damage, and a window that
++// was destroyed reports nothing at all. Both leave their old pixels behind.
++//
++// Everything here is in OUTPUT space, because outputSpaceVisibleRegion is
++// already transformed for us. That is deliberate: the layer->output->display
++// transform chain is the easiest thing on this device to get subtly wrong
++// (docs/15 section 6, and it is how the panel ends up refreshing a
++// plausible-looking but wrong rectangle). This avoids doing it by hand at all.
++// It is also the VISIBLE region, so pixels behind an opaque window on top are
++// correctly not refreshed.
++//
++// surfaceDamage encoding, from LayerSnapshot.cpp::updateSurfaceDamage():
++//     no new buffer     -> empty region
++//     forceFullDamage   -> Region::INVALID_REGION
++//     otherwise         -> the client's own damage rects
++//
++// The trap: INVALID_REGION is Region(Rect{0,0,-1,-1}), and Rect::isEmpty() is
++// (width <= 0 || height <= 0), so INVALID_REGION.isEmpty() is TRUE. Testing
++// isEmpty() therefore reads "repaint this entire layer" as "nothing changed" --
++// silent stale pixels. Discriminate on isValid(), which is what Layer.cpp does
++// when it computes isSmallDirty.
 +// ===========================================================================
 +Region collectEpdcDamage(const Output& output) {
-+    const auto& outputState = output.getState();
-+    return outputState.transform.transform(output.getDirtyRegion());
++    // Last frame's coverage per layer, so we can detect movement and removal.
++    // Keyed by output as well: finishFrame runs once per output and outputs do
++    // not share layers. Entries are erased when an output stops appearing.
++    static std::unordered_map<const Output*, std::unordered_map<int32_t, Region>>
++            sPrevCoverage;
++
++    auto& prev = sPrevCoverage[&output];
++    std::unordered_map<int32_t, Region> current;
++    current.reserve(prev.size() + 4);
++
++    Region damage;
++
++    for (const auto* outputLayer : output.getOutputLayersOrderedByZ()) {
++        if (!outputLayer) continue;
++
++        const Region& coverage = outputLayer->getState().outputSpaceVisibleRegion;
++        auto& layerFE = outputLayer->getLayerFE();
++        const int32_t id = layerFE.getSequence();
++        current[id] = coverage;
++
++        // (1) Did the contents change?
++        bool contentChanged;
++        if (const auto* feState = layerFE.getCompositionState()) {
++            const Rect bounds = feState->surfaceDamage.getBounds();
++            // !isValid() is the INVALID_REGION sentinel: the whole layer.
++            contentChanged = !bounds.isValid() || !bounds.isEmpty();
++        } else {
++            // No state to consult. Assume the expensive answer: returning too
++            // much only costs refresh time, returning too little corrupts the
++            // panel until something else happens to repaint that area.
++            contentChanged = true;
++        }
++        if (contentChanged) {
++            damage.orSelf(coverage);
++        }
++
++
++        // (2) Did the coverage change? Both the vacated and the newly occupied
++        // pixels need repainting, and neither shows up in surfaceDamage.
++        const auto it = prev.find(id);
++        if (it == prev.end()) {
++            damage.orSelf(coverage);
++        } else if (!it->second.hasSameRects(coverage)) {
++            damage.orSelf(it->second);
++            damage.orSelf(coverage);
++        }
++    }
++
++    // (3) Layers that existed last frame and do not now. Whatever is behind
++    // them has to be repainted, and this cache is the only remaining record of
++    // where they were.
++    for (const auto& [id, coverage] : prev) {
++        if (current.find(id) == current.end()) {
++            damage.orSelf(coverage);
++        }
++    }
++
++
++    prev = std::move(current);
++
++    // Clip to the panel. A layer can extend past the display edge, and the
++    // kernel rejects an update rectangle that does not fit the plane.
++    damage.andSelf(output.getState().displaySpace.getContent());
++    return damage;
 +}
 +
 +void publishEpdcDamage(const Region& damage, bool forceFull) {
 +    auto* s = epdcDamageMap();
 +    if (!s) return;
 +
-+    {   // temporary instrumentation: is the region actually fine-grained?
-+        static int n; 
-+        if ((n++ % 30) == 0) {
-+            size_t c = 0;
-+            for (auto it = damage.begin(), e = damage.end(); it != e; ++it) ++c;
-+            const Rect b = damage.getBounds();
-+            ALOGI("epdc: raw rects=%zu bounds=[%d %d %d %d]",
-+                  c, b.left, b.top, b.right, b.bottom);
-+        }
++    // Nothing changed: do not advertise a change.
++    //
++    // seq is the reader's change detector -- the shim drives the panel only when
++    // it moves. Publishing an empty region while bumping seq tells the shim
++    // "something changed, but I cannot say what", and its fallback for an
++    // unknown region is the whole panel. So an empty damage region used to cost
++    // a full 1648x824 refresh.
++    //
++    // That was harmless when damage was a single coarse full-panel rectangle,
++    // because it was never empty. With per-layer damage it is empty routinely:
++    // an app whose SurfaceView keeps SurfaceFlinger compositing while none of
++    // its layers actually change produces exactly this. Measured in the Kindle
++    // reader, idle with no input: 20 commits and 2 full-panel refreshes every
++    // five seconds, for a page that was not changing.
++    //
++    // forceFull still publishes, because that is a deliberate request to
++    // repaint (first frame after attach, where what is on the panel is unknown).
++    if (!forceFull && damage.isEmpty()) {
++        return;
 +    }
++
 +
 +    uint32_t n = 0;
 +    epdc_damage_rect rects[EPDC_DAMAGE_MAX];
@@ -147,7 +335,7 @@ index eac7fbd1d6..891c53041f 100644
  void Output::finishFrame(GpuCompositionResult&& result) {
      SFTRACE_CALL();
      ALOGV(__FUNCTION__);
-@@ -1270,6 +1401,18 @@ void Output::finishFrame(GpuCompositionResult&& result) {
+@@ -1270,6 +1497,18 @@ void Output::finishFrame(GpuCompositionResult&& result) {
          return;
      }
  

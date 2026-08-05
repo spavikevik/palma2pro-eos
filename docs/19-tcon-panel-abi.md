@@ -200,15 +200,52 @@ device's own firmware (`docs/03`):
 
 | value | name | notes |
 |---|---|---|
-| 0 | `EPD_AUTO` | **[V] tried, rejected** — heavy ghosting, worse than fixed GC16 |
-| 1 | `EPD_OVERLAY` | |
-| **2** | **`EPD_FULL_GC16`** | 16-level, clean. What Onyx uses; our default |
-| 3 | `EPD_FULL_GL16` | |
-| 5 | `EPD_FULL_GLD16` | |
-| 6 | `EPD_FULL_GCC16` | |
-| 8 | `EPD_PART_GL16` | **[V]** looked worse here, steady-state and as a motion mode |
-| 12 | `EPD_A2` | binary, fastest |
-| 14 | `EPD_RESET` | |
+| **2** | `gc16` | **[V]** 16 grey, clean, slow. Steady-state default |
+| 4 | `glr16` | **[V] accepted but STICKS** — frames stop updating mid-scroll, silently, with no driver error. Regal modes track per-pixel history; whatever that needs is not being maintained for us |
+| 5 | `gld16` | **[V] no output** |
+| **6** | `a2` | **[V] accepted. Binary (black/white only), fastest, and BIDIRECTIONAL** — unlike `overlay` it lifts ink as well as laying it, so it leaves no trail. The motion mode |
+| 8 | `glr16plus` | untested |
+| 9 | `glr16nm` | untested — "no measure", plausibly quicker than plain `glr16` |
+| — | `gcc16`, `glrc16` | **absent from this unit's waveform file** (index `-1`). These are the Kaleido colour modes; this panel reports `color_panel[0]` and has none |
+
+**Take these from the driver, not from a table of mode names.** The kernel prints
+its own index map at boot and it is authoritative:
+
+```
+onyx_get_eink_screen_timing(): color_panel[0], timing_version[0], waveform_file_format[0]
+get_glr16_mode_index(): gc16[2] glr16[4] gld16[5] a2[6] gcc16[-1] glrc16[-1] glr16nm[9] glr16plus[8].
+```
+
+`adb shell dmesg | grep get_glr16_mode_index` recovers it on any unit. The indices
+are properties of the **loaded waveform file**, not fixed constants, so a
+different `.wbf` may renumber them.
+
+A mode that produces no output is externally indistinguishable from a hung
+compositor -- the screen simply stops updating, with nothing logged. If the panel
+freezes after a tuning change, look here first.
+
+### Correction, 2026-08-04
+
+An earlier version of this table listed `EPD_A2 = 12`, `EPD_PART_GL16 = 8` and
+`EPD_OVERLAY = 1`, and recorded A2 and PART_GL16 as *rejected, produces no
+refresh at all*. That was wrong, and it was expensive.
+
+Those numbers came from a mode-name table of unknown provenance rather than from
+this device. Mode 12 does not exist in this waveform file, so testing it produced
+nothing -- and "nothing" was written down as "the driver rejects this mode",
+alongside a passing control, which made it read as measured. The control was
+fine. The inputs were fiction.
+
+Everything downstream followed: the conclusion that **there is no fast and
+correct waveform on this hardware**, the resulting use of `overlay` (mode 1,
+additive, which smears every frame onto the panel), two bugs written to work
+around that smearing, and second-long full-drive passes to undo it.
+
+A2 works. It is mode 6, it is bidirectional, and it is what the motion path
+should have used from the start.
+
+The lesson is the one already in this document: **prefer a captured value to a
+derived one.** The driver printed the correct table at every boot the whole time.
 
 `update_mode` is a **separate axis**: flashing (repaint every pixel in the
 region) vs partial (drive only changed pixels). Cross-platform semantics of the
@@ -235,7 +272,44 @@ presents as a ghosting/quality problem. The `0x10000` bit is **not decoded**;
 `0x31000` is simply what stock does. `0x21000` returns rc=0 and `0x31000`
 returns rc=1148 from the ioctl, so the bit demonstrably changes behaviour.
 
-### 4.6 `temp` **[unknown]**
+### 4.6 `temp` and `dither_mode` **[D] -- the driver does not read them**
+
+NXP's i.MX EPDC uapi, which this struct matches field for field, defines
+`TEMP_USE_AMBIENT = 0x1000`, and the field at `+0x24` we recorded as `reserved`
+is i.MX's **`dither_mode`** (0 off, 1 Floyd-Steinberg, 2 Atkinson, 3 ordered,
+4 quantise-only). Both are exposed as `persist.epdcshim.temp` and
+`persist.epdcshim.dither`.
+
+**Neither appears to do anything on this driver.** Counting loads at each field's
+known stack offset through `epdc_ioctl`, and through
+`__onyx_epdc_buf_put_queue()` which receives the struct as argument 5:
+
+| field | offset | reads | verdict |
+|---|---|---|---|
+| `waveform_mode` | +0x10 | many | live |
+| `update_mode` | +0x14 | **none** | not read |
+| `update_marker` | +0x18 | many | live |
+| `temp` | +0x1c | **none** | not read |
+| `flags` | +0x20 | many | live |
+| `dither_mode` | +0x24 | 1, behind `flags == 2` | unreachable for us |
+
+So "`4096` is accepted" -- the earlier note here -- was true and misleading: it is
+accepted because it is **ignored**, which is also why its visual effect could
+never be confirmed. `update_mode` being unread means the i.MX `PARTIAL`/`FULL`
+distinction does not exist here either; everything is decided by `waveform_mode`
+and `flags`.
+
+The `dither_mode` site is guarded by `flags == 2` and we send `0x31000`, so it
+never runs. Caveat on that one: the pointer was tracked through `mov` aliases,
+which is not sound, and at that site `flags` is compared against `0xff`/`2`/`0xf`
+-- not plausible for a field we send as `0x31000` -- so the register may point at
+an internal queue entry rather than the user's struct. The `temp` and
+`update_mode` negatives hold under any aliasing. See `docs/22` section 13.
+
+See `docs/22-kernel-driver-internals.md` for the driver's full ioctl surface,
+its sysfs debug controls, and the `extbuf` out-of-band image path.
+
+### 4.6.1 original note
 
 Waveforms are temperature-indexed and the driver exposes
 `onyx_epdc_fb_get_temp_index` / `onyx_epdc_read_temperature`. We send **0** in

@@ -179,11 +179,45 @@ build)
         if [ ! -f build/envsetup.sh ]; then
             echo 'no build/envsetup.sh -- the repo sync has not finished'; exit 1
         fi
+        # Leftover JVMs from a previously killed build hold their full heap and
+        # will starve this one before it starts. They are orphans -- their ninja
+        # is gone, so they can produce nothing -- but nothing reaps them.
+        if pgrep -x java >/dev/null; then
+            echo \"reaping \$(pgrep -cx java) orphaned JVMs from a previous build\"
+            pkill -x java 2>/dev/null || true
+            sleep 3
+            pkill -9 -x java 2>/dev/null || true
+        fi
         nohup $ENV_PREFIX bash -lc '
             cd $BUILDER_TREE
             source build/envsetup.sh >/dev/null
             lunch $BUILDER_LUNCH
-            m $target
+            # Two caps, because one is not enough on this host.
+            #
+            # A droid build died three times with
+            #     ninja failed with: signal: killed
+            # OOM-killed within minutes of ninja starting.
+            #
+            # NINJA_HIGHMEM_NUM_JOBS caps the soong highmem pool, and works
+            # -- the generated ninja file carries \"pool highmem_pool / depth =
+            # 6\". But it governs r8 and friends only. javac is NOT in that pool,
+            # so it runs at full ninja parallelism, and javac is a JVM too. A
+            # failed build was caught with 27 live JVMs: 13 r8 AND 12 javac,
+            # nearly all -Xmx4096M. Against 46 GB of RAM that is roughly 100 GB
+            # of heap ceiling, and no per-pool cap can fix it because the two
+            # pools are counted separately.
+            #
+            # So total ninja parallelism is capped as well. This host has 16
+            # cores, and ninja would default to about 18 concurrent jobs; 10
+            # keeps the worst case near 30 GB while losing little on the
+            # non-JVM steps, which are the overwhelming majority.
+            #
+            # Raising _JAVA_OPTIONS instead was considered and rejected: it
+            # applies to every JVM the build starts and prints a \"Picked up
+            # _JAVA_OPTIONS\" line to stderr that some build steps parse as
+            # output. builder.env unsets it deliberately for that reason.
+            export NINJA_HIGHMEM_NUM_JOBS=${HIGHMEM_JOBS:-6}
+            m -j${BUILD_JOBS:-10} $target
         ' > $BUILD_LOG 2>&1 &
         echo \"build '$target' started, pid \$!\"
         echo \"log: $BUILD_LOG\"
@@ -239,12 +273,32 @@ status)
 
 stop)
     need_pin
+    # -x, never -f. `pkill -f soong_ui` matches the whole command line, and the
+    # shell running THIS script has "soong_ui" in its own -- so it killed itself
+    # partway through and left the build running, while reporting nothing useful.
+    # Same self-matching trap the sync PID file exists to avoid.
+    #
+    # ckati and java are here because stopping a build has to leave the tree
+    # startable: a half-killed build leaves orphaned r8 JVMs holding tens of
+    # gigabytes, and the next build then dies on memory rather than on anything
+    # to do with the source.
     ssh "${ssh_opts[@]}" "$TARGET" "
-        pkill -f soong_ui  2>/dev/null || true
-        pkill -x soong_build 2>/dev/null || true
-        pkill -x ninja 2>/dev/null || true
+        for _p in soong_ui soong_build ninja ckati; do
+            pkill -x \$_p 2>/dev/null || true
+        done
+        sleep 3
+        for _p in soong_ui soong_build ninja ckati; do
+            pkill -9 -x \$_p 2>/dev/null || true
+        done
+        pkill -x java 2>/dev/null || true
         sleep 2
-        pgrep -x soong_build >/dev/null && echo 'still running' || echo 'build stopped'
+        pkill -9 -x java 2>/dev/null || true
+        _left=0
+        for _p in soong_ui soong_build ninja ckati java; do
+            _n=\$(pgrep -cx \$_p 2>/dev/null || true)
+            [ -n \"\$_n\" ] && [ \"\$_n\" != 0 ] && { echo \"still running: \$_p (\$_n)\"; _left=1; }
+        done
+        [ \$_left -eq 0 ] && echo 'build stopped, tree clean'
     "
     ;;
 

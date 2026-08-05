@@ -192,6 +192,40 @@ PRODUCT_PACKAGES += \
     BlissLauncherEinkOverlay \
     FrameworkEinkOverlay
 
+# Names org.codeaurora.ims as the device ImsService, so VoLTE signalling comes
+# up on its own. Without it, `cmd phone ims set-ims-service` has to be re-run by
+# hand after every reboot -- that override is not persisted anywhere, and a
+# rebooted device looks exactly like a regression in whatever changed last.
+# Overrides a com.android.phone resource, not a framework-res one, hence a
+# separate overlay from FrameworkEink. See rro/PhoneImsService/.
+PRODUCT_PACKAGES += \
+    PhoneImsServiceOverlay
+
+# E-ink lock screensaver.
+#
+# An e-ink panel holds its last frame with no power, so locking the device
+# otherwise leaves the home screen -- or whatever you were reading -- on the
+# glass indefinitely, readable by anyone who picks it up.
+#
+# This is a plain oneshot binary, not framework code. Nothing composites at lock
+# time, which is what defeated three attempts inside SystemUI; the driver's
+# handwriting path bypasses the compositor entirely and works with the display
+# already asleep. See device/onyx/Palma2_Pro_C/epdc-screensaver/ and docs/22.
+PRODUCT_PACKAGES += \
+    epdc-screensaver
+
+# The artwork it shows. Pre-rendered rather than generated at build time:
+# gen-screensaver.py drives `sips`, which is macOS-only, and the builder is
+# Linux. The plane is flat-quantised to the panel's 16 levels per channel and
+# NOT dithered -- a woodblock print is mostly flat tone, so dithering only adds
+# high-frequency noise, and it costs 40% more space (531 KB compressed against
+# 753 KB) for a worse-looking result.
+#
+# Provenance is in THIRD_PARTY.md. Public domain, Met Open Access, verified
+# against the museum's own API rather than assumed.
+PRODUCT_COPY_FILES += \
+    $(LOCAL_PATH)/epdc-screensaver/artwork/01-great-wave.raw:$(TARGET_COPY_OUT_SYSTEM)/etc/epdc/screensaver/01-great-wave.raw
+
 # The navigation bar does not exist AT ALL without this: config_showNavigationBar
 # is false for this device, and PhoneWindowManager treats "0" here as an explicit
 # override that forces the bar on. It is read once, before WindowManager starts,

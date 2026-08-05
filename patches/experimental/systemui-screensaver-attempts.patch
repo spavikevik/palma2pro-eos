@@ -1,0 +1,192 @@
+diff --git a/packages/SystemUI/res/values/cm_strings.xml b/packages/SystemUI/res/values/cm_strings.xml
+index e35f1a6e2a19..b2162e502253 100644
+--- a/packages/SystemUI/res/values/cm_strings.xml
++++ b/packages/SystemUI/res/values/cm_strings.xml
+@@ -64,6 +64,8 @@
+ 
+     <!-- AOD QS tile -->
+     <string name="quick_settings_aod_label">AOD</string>
++    <!-- Frontlight warm LED level; this panel has no backlight -->
++    <string name="quick_settings_warmth_label">Warmth</string>
+     <string name="quick_settings_aod_off_powersave_label">AOD off\nBattery saver</string>
+ 
+     <!-- Caffeine QS tile -->
+diff --git a/packages/SystemUI/src/com/android/systemui/keyguard/KeyguardViewMediator.java b/packages/SystemUI/src/com/android/systemui/keyguard/KeyguardViewMediator.java
+index 020004437a93..6e2f9a7978e9 100644
+--- a/packages/SystemUI/src/com/android/systemui/keyguard/KeyguardViewMediator.java
++++ b/packages/SystemUI/src/com/android/systemui/keyguard/KeyguardViewMediator.java
+@@ -1812,8 +1812,166 @@ public class KeyguardViewMediator implements CoreStartable, Dumpable,
+      * @param offReason either {@link WindowManagerPolicyConstants#OFF_BECAUSE_OF_USER} or
+      * {@link WindowManagerPolicyConstants#OFF_BECAUSE_OF_TIMEOUT}.
+      */
++    /**
++     * E-ink lock screensaver.
++     *
++     * An e-ink panel retains the last frame SurfaceFlinger composited, indefinitely and
++     * with no power. When the device locks, Android stops compositing before the keyguard
++     * reaches the panel, so whatever you were last looking at stays on the glass -- the
++     * home screen, or the page of the book you were reading. The device looks unlocked and
++     * whatever you were reading is readable by anyone who picks it up.
++     *
++     * There is only one way to change what the panel shows: get SurfaceFlinger to composite
++     * a frame. Writing an image to /dev/ebc does NOT work -- that path refreshes the panel
++     * from the EBC framebuffer, which nothing in our stack writes, so it repaints from an
++     * empty buffer and blanks the screen. That was diagnosed the hard way; see issue #2.
++     *
++     * So: put a full-screen window up at the start of the going-to-sleep transition, while
++     * the panel is still powered, and let the normal compositing path carry it. The panel
++     * then holds that image for free once the display powers down.
++     *
++     * Deliberately no wakelock. Holding the screen on to guarantee the composite would risk
++     * fighting the power manager, and a device that will not sleep flattens its battery
++     * overnight -- which this project has already shipped once. If the frame occasionally
++     * does not land, the cost is the old behaviour for that one lock, which is acceptable;
++     * a wake loop is not.
++     *
++     * The image is optional. With no file present this does nothing at all.
++     */
++    private static final String EPDC_SCREENSAVER_PATH = "/data/misc/epdc/screensaver.png";
++
++    private android.view.View mEpdcScreensaverView;
++    private PowerManager.WakeLock mEpdcScreensaverWakeLock;
++
++    /**
++     * How long to keep the display powered after locking, so the screensaver frame can be
++     * composited. Long enough for one commit plus one full GC16 waveform; short enough that
++     * a user never perceives it as "the screen did not turn off".
++     */
++    private static final long EPDC_SCREENSAVER_HOLD_MS = 900L;
++
++    private void epdcShowScreensaver() {
++        // Nothing is drawn at lock time on stock Android. The keyguard is composited when
++        // the device WAKES, not when it locks -- press power and the display simply powers
++        // off. On an LCD that is invisible. On e-ink the panel keeps whatever frame it was
++        // last given, which is why locking leaves the home screen, or the page you were
++        // reading, sitting on the glass.
++        //
++        // So this is not a race to be won by acting earlier: there is no frame to beat. The
++        // display has to be held on briefly while we compose one, which is what the wakelock
++        // is for.
++        //
++        // Bounded deliberately. acquire(timeout) means the kernel drops it even if our
++        // release never runs, so the worst case is the screen staying on for
++        // EPDC_SCREENSAVER_HOLD_MS, never a device that will not sleep. That distinction
++        // matters: a permanently-held screen wakelock flattened this device's battery once
++        // already (see the svc power stayon note in CLAUDE.md).
++        if (!new java.io.File(EPDC_SCREENSAVER_PATH).exists()) {
++            return;
++        }
++        try {
++            if (mEpdcScreensaverWakeLock == null) {
++                // No ACQUIRE_CAUSES_WAKEUP. With it, acquiring during the
++                // going-to-sleep transition wakes the device straight back up,
++                // which fires onStartedWakingUp, which releases this lock 30ms
++                // later -- the device never sleeps and no screensaver is drawn.
++                // Observed exactly that. A plain screen-bright lock keeps the
++                // display powered for the frame without cancelling the sleep.
++                mEpdcScreensaverWakeLock = mPM.newWakeLock(
++                        PowerManager.SCREEN_BRIGHT_WAKE_LOCK,
++                        "epdc:screensaver");
++                mEpdcScreensaverWakeLock.setReferenceCounted(false);
++            }
++            mEpdcScreensaverWakeLock.acquire(EPDC_SCREENSAVER_HOLD_MS);
++        } catch (Exception e) {
++            Log.w(TAG, "epdc screensaver wakelock: " + e);
++        }
++
++        // addView() builds a ViewRootImpl, which needs a Looper; this arrives on a binder
++        // thread, so hop to the UI thread to actually draw.
++        mHandler.post(this::epdcShowScreensaverOnMain);
++        // Release a little before the timeout so the display powers down promptly once the
++        // frame is on the panel. The timeout above is the backstop, not the plan.
++        mHandler.postDelayed(this::epdcReleaseScreensaverWakeLock,
++                EPDC_SCREENSAVER_HOLD_MS - 100L);
++    }
++
++    private void epdcReleaseScreensaverWakeLock() {
++        try {
++            if (mEpdcScreensaverWakeLock != null && mEpdcScreensaverWakeLock.isHeld()) {
++                mEpdcScreensaverWakeLock.release();
++            }
++        } catch (Exception e) {
++            Log.w(TAG, "epdc screensaver wakelock release: " + e);
++        }
++    }
++
++    private void epdcShowScreensaverOnMain() {
++        try {
++            if (mEpdcScreensaverView != null) {
++                return;
++            }
++            final java.io.File f = new java.io.File(EPDC_SCREENSAVER_PATH);
++            if (!f.exists()) {
++                return;
++            }
++            final android.graphics.Bitmap bmp =
++                    android.graphics.BitmapFactory.decodeFile(EPDC_SCREENSAVER_PATH);
++            if (bmp == null) {
++                return;
++            }
++
++            final android.widget.ImageView iv = new android.widget.ImageView(mContext);
++            iv.setImageBitmap(bmp);
++            // The artwork is generated at the panel's exact size, so do not let it be
++            // rescaled -- resampling would undo the dithering it was prepared with.
++            iv.setScaleType(android.widget.ImageView.ScaleType.CENTER_CROP);
++            iv.setBackgroundColor(android.graphics.Color.WHITE);
++
++            final android.view.WindowManager.LayoutParams lp =
++                    new android.view.WindowManager.LayoutParams(
++                            android.view.WindowManager.LayoutParams.MATCH_PARENT,
++                            android.view.WindowManager.LayoutParams.MATCH_PARENT,
++                            android.view.WindowManager.LayoutParams.TYPE_KEYGUARD_DIALOG,
++                            android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
++                                    | android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
++                                    | android.view.WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
++                            android.graphics.PixelFormat.OPAQUE);
++            lp.setTitle("EpdcScreensaver");
++
++            final android.view.WindowManager wm =
++                    mContext.getSystemService(android.view.WindowManager.class);
++            wm.addView(iv, lp);
++            mEpdcScreensaverView = iv;
++        } catch (Exception e) {
++            Log.w(TAG, "epdc screensaver: " + e);
++            mEpdcScreensaverView = null;
++        }
++    }
++
++    private void epdcHideScreensaver() {
++        epdcReleaseScreensaverWakeLock();
++        mHandler.post(this::epdcHideScreensaverOnMain);
++    }
++
++    private void epdcHideScreensaverOnMain() {
++        try {
++            if (mEpdcScreensaverView == null) {
++                return;
++            }
++            final android.view.WindowManager wm =
++                    mContext.getSystemService(android.view.WindowManager.class);
++            wm.removeViewImmediate(mEpdcScreensaverView);
++        } catch (Exception e) {
++            Log.w(TAG, "epdc screensaver remove: " + e);
++        } finally {
++            mEpdcScreensaverView = null;
++        }
++    }
++
+     public void onStartedGoingToSleep(@WindowManagerPolicyConstants.OffReason int offReason) {
+         if (DEBUG) Log.d(TAG, "onStartedGoingToSleep(" + offReason + ")");
++        epdcShowScreensaver();
+         synchronized (this) {
+             mDeviceInteractive = false;
+             mPowerGestureIntercepted = false;
+@@ -2078,6 +2236,7 @@ public class KeyguardViewMediator implements CoreStartable, Dumpable,
+      */
+     public void onStartedWakingUp(@PowerManager.WakeReason int pmWakeReason,
+             boolean cameraGestureTriggered) {
++        epdcHideScreensaver();
+         Trace.beginSection("KeyguardViewMediator#onStartedWakingUp");
+ 
+         // TODO: Rename all screen off/on references to interactive/sleeping

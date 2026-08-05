@@ -1,0 +1,176 @@
+diff --git a/services/core/java/com/android/server/power/ThermalManagerService.java b/services/core/java/com/android/server/power/ThermalManagerService.java
+index 42dbb7974fe2..07e5498dce58 100644
+--- a/services/core/java/com/android/server/power/ThermalManagerService.java
++++ b/services/core/java/com/android/server/power/ThermalManagerService.java
+@@ -47,6 +47,7 @@ import android.os.IThermalHeadroomListener;
+ import android.os.IThermalService;
+ import android.os.IThermalStatusListener;
+ import android.os.PowerManager;
++import android.os.SystemProperties;
+ import android.os.Process;
+ import android.os.RemoteCallbackList;
+ import android.os.RemoteException;
+@@ -255,6 +256,7 @@ public class ThermalManagerService extends SystemService {
+             onTemperatureMapChangedLocked();
+             mTemperatureWatcher.getAndUpdateThresholds();
+             mHalReady.set(true);
++            epdcStartThermalPolling();
+         }
+     }
+ 
+@@ -330,6 +332,76 @@ public class ThermalManagerService extends SystemService {
+         }
+     }
+ 
++    /**
++     * How often to re-read the HAL and recompute the aggregate thermal status, in seconds.
++     * 0 disables polling and restores stock behaviour.
++     */
++    private static final int DEFAULT_THERMAL_POLL_SECONDS = 30;
++
++    private static long epdcPollIntervalMs() {
++        final int seconds = SystemProperties.getInt("persist.sys.thermal.poll_seconds",
++                DEFAULT_THERMAL_POLL_SECONDS);
++        return seconds <= 0 ? 0L : seconds * 1000L;
++    }
++
++    private final Runnable mEpdcThermalPoll = new Runnable() {
++        @Override
++        public void run() {
++            epdcPollHalAndRecompute();
++            final long next = epdcPollIntervalMs();
++            if (next > 0) {
++                BackgroundThread.getHandler().postDelayed(this, next);
++            }
++        }
++    };
++
++    /**
++     * Re-read every temperature from the HAL and recompute the aggregate status.
++     *
++     * Stock only recomputes the aggregate in two places: once when the HAL connects, and
++     * whenever the HAL pushes a change through IThermalChangedCallback. On this device the
++     * HAL does not push, so the system thermal status was whatever it happened to be at
++     * connect time and never moved again -- while dumpsys kept displaying live polled
++     * temperatures beside it, which is what made it look like a stuck sensor rather than a
++     * stale aggregate.
++     *
++     * The consequence was not cosmetic. JobScheduler's ThermalStatusRestriction refuses to
++     * run non-expedited jobs at THROTTLING_SEVERE, so a status frozen at SEVERE meant
++     * DownloadManager never transferred a byte and no app could be installed from any
++     * source, indefinitely and silently. Restarting the thermal HAL "fixed" it only because
++     * that forces a reconnect, which re-runs the connect path. See issue #15.
++     *
++     * Polling is cheap: getCurrentTemperatures() on a handful of sensors, every 30s by
++     * default, on the shared background thread.
++     */
++    private void epdcPollHalAndRecompute() {
++        synchronized (mLock) {
++            if (mHalWrapper == null || !mHalReady.get()) {
++                return;
++            }
++            final List<Temperature> temperatures = mHalWrapper.getCurrentTemperatures(false, 0);
++            if (temperatures == null || temperatures.isEmpty()) {
++                return;
++            }
++            final int count = temperatures.size();
++            for (int i = 0; i < count; i++) {
++                // sendCallback=false: update the map without recomputing per entry, then
++                // recompute once below, exactly as the connect path does.
++                onTemperatureChanged(temperatures.get(i), false);
++            }
++            onTemperatureMapChangedLocked();
++        }
++    }
++
++    private void epdcStartThermalPolling() {
++        final long interval = epdcPollIntervalMs();
++        if (interval <= 0) {
++            return;
++        }
++        BackgroundThread.getHandler().removeCallbacks(mEpdcThermalPoll);
++        BackgroundThread.getHandler().postDelayed(mEpdcThermalPoll, interval);
++    }
++
+     @GuardedBy("mLock")
+     private void onTemperatureMapChangedLocked() {
+         int newStatus = Temperature.THROTTLING_NONE;
+@@ -424,8 +496,78 @@ public class ThermalManagerService extends SystemService {
+         }
+     }
+ 
++    /**
++     * Skin temperature, in Celsius, at or above which THROTTLING_SEVERE is honoured.
++     *
++     * This device's thermal HAL reports a skin status that is stuck at THROTTLING_SEVERE
++     * regardless of the temperature it reports alongside it. Measured on an idle, charging
++     * device with nothing running:
++     *
++     *     mValue=35.611 mStatus=3
++     *     mValue=35.645 mStatus=3
++     *     mValue=35.512 mStatus=3
++     *
++     * The value is live -- it drifts by tens of millidegrees between samples -- and it is
++     * roughly 4.5C BELOW the HAL's own declared severe threshold, which getTemperatureThresholds()
++     * gives as 40.0C for skin (every CPU and the GPU get 95.0C). So this is not a marginal
++     * calibration or a hot device: the status field itself is wrong.
++     *
++     * That single field decides the thermal status of the entire system, because
++     * onTemperatureMapChangedLocked() derives it from the skin sensor alone -- CPU and GPU
++     * statuses are not counted. JobScheduler's ThermalStatusRestriction then refuses to run
++     * any non-expedited job. The observed consequence was that DownloadManager never
++     * transferred a byte, so no app could be installed from any source, silently and with
++     * nothing logged anywhere. See issue #15.
++     *
++     * The default below is the HAL's OWN declared threshold rather than a looser invented one.
++     * The intent is narrow: honour the threshold the vendor declared, and ignore only the
++     * status field that contradicts it. A genuinely warm device still throttles at 40C.
++     *
++     * This cannot be fixed where it belongs. The thresholds and the status logic are compiled
++     * into the vendor HAL binary (vendor/qcom/opensource/thermal-hal/thermalConfig.cpp,
++     * selected by SoC id 434), not read from any config file, and this project never flashes
++     * the vendor partition.
++     */
++    private static final int DEFAULT_SKIN_SEVERE_CELSIUS = 40;
++
++    private static float skinSevereCelsius() {
++        return SystemProperties.getInt("persist.sys.thermal.skin_severe_c",
++                DEFAULT_SKIN_SEVERE_CELSIUS);
++    }
++
++    /**
++     * Relax an implausible SEVERE on the skin sensor, and only that.
++     *
++     * Deliberately conservative. CRITICAL, EMERGENCY and SHUTDOWN pass through untouched, so
++     * shutdownIfNeeded() and genuine thermal protection are unaffected; only a skin reading
++     * that the HAL called SEVERE while measuring below the declared threshold is relaxed.
++     * Every non-skin sensor is left alone entirely.
++     */
++    private Temperature remapSkinStatus(Temperature temperature) {
++        if (temperature.getType() != Temperature.TYPE_SKIN) {
++            return temperature;
++        }
++        final int status = temperature.getStatus();
++        if (status < Temperature.THROTTLING_LIGHT) {
++            return temperature;
++        }
++        if (status > Temperature.THROTTLING_SEVERE) {
++            return temperature;
++        }
++        final float value = temperature.getValue();
++        if (Float.isNaN(value)) {
++            return temperature;
++        }
++        if (value >= skinSevereCelsius()) {
++            return temperature;
++        }
++        return new Temperature(value, temperature.getType(), temperature.getName(),
++                Temperature.THROTTLING_NONE);
++    }
++
+     private void onTemperatureChanged(Temperature temperature, boolean sendCallback) {
+         shutdownIfNeeded(temperature);
++        temperature = remapSkinStatus(temperature);
+         synchronized (mLock) {
+             Temperature old = mTemperatureMap.put(temperature.getName(), temperature);
+             if (old == null || old.getStatus() != temperature.getStatus()) {

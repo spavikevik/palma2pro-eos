@@ -87,6 +87,31 @@ BOARD_PREBUILT_DTBIMAGE_DIR := $(DEVICE_PATH)/prebuilt/dtb
 # only for userdebug/eng).
 #
 # REMOVE THIS BLOCK once the port boots and logging is no longer needed.
+#
+# TWO OTHER THINGS ON THIS LINE ARE INHERITED, NOT CHOSEN.
+#
+# The whole cmdline was copied verbatim from Onyx's stock boot image, so every
+# flag here is theirs unless stated otherwise. Two are worth knowing about:
+#
+#   lpm_levels.sleep_disabled=1
+#       Disables Qualcomm's CPU low-power modes -- the SoC never enters deep
+#       idle. /sys/power/suspend_stats/success reads 0 since boot on this
+#       device. On something meant to sit untouched for days behind an e-ink
+#       panel that is a plausible large share of the idle drain, and it has
+#       been in every image this project has built.
+#
+#       Not removed yet, deliberately. It needs a flash and an overnight
+#       comparison to judge, and bring-up configs set it for a reason: some
+#       Qualcomm BSPs are genuinely unstable in deep LPM. Test it with a way
+#       back. Tracked as its own task.
+#
+#       Related but separate: stay_on_while_plugged_in was also found set to
+#       15 (never sleep on any supply) on the device, which is a settings-level
+#       problem with its own teardown in CLAUDE.md, not a cmdline one.
+#
+#   video=vfb:640x400,bpp=32,memsize=3072000
+#       A 3 MB virtual framebuffer at a resolution this panel does not have.
+#       Also inherited. Unexamined.
 BOARD_KERNEL_CMDLINE := console=ttyMSM0,115200,n8 earlycon=msm_geni_serial,0x888000 androidboot.hardware=qcom androidboot.console=ttyMSM0 androidboot.memcg=1 lpm_levels.sleep_disabled=1 video=vfb:640x400,bpp=32,memsize=3072000 msm_rtb.filter=0x237 service_locator.enable=1 androidboot.usbcontroller=a600000.dwc3 swiotlb=2048 cgroup.memory=nokmem,nosocket loop.max_part=7 buildvariant=user androidboot.selinux=permissive
 
 BOARD_KERNEL_BASE := 0x00000000

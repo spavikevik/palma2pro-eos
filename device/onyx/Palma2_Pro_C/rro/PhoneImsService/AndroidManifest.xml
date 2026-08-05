@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.android.phone.eink.ims">
+    <!--
+      Name the device ImsService, so VoLTE survives a reboot.
+
+      Without this, the only way to designate an ImsService is the runtime
+      override:
+
+          cmd phone ims set-ims-service -s 0 -d -f 1 org.codeaurora.ims
+
+      which is not persisted anywhere. After every reboot the device sits on LTE
+      advertising VOICE and cannot register IMS until someone runs that by hand.
+
+      PhoneGlobals reads config_ims_mmtel_package once at startup and hands it to
+      ImsResolver.make(), so overriding that string is enough. It is a resource
+      of com.android.phone, not of framework-res, which is why this is a separate
+      overlay from FrameworkEink.
+
+      Only MMTEL is set. RCS is deliberately left empty: the ims.apk we install
+      registers MMTEL and EMERGENCY_MMTEL only, and on Fairphone 4 RCS comes
+      from a separate ImsRcsService.apk that this device does not have. Pointing
+      config_ims_rcs_package at a package with no RCS feature makes ImsResolver
+      wait for a binding that never arrives.
+    -->
+    <overlay android:targetPackage="com.android.phone"
+             android:isStatic="true"
+             android:priority="9999" />
+    <application android:hasCode="false" />
+</manifest>
