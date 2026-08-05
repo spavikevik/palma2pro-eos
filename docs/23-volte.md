@@ -324,6 +324,20 @@ resources, so it cannot be overlaid and the app has to be rebuilt.
 
 `device/onyx/Palma2_Pro_C/rro/PhoneImsService/` sets it to `org.codeaurora.ims`.
 
+Verified after a clean reboot with the runtime override cleared and no
+`set-ims-service` issued:
+
+    cmd overlay list      ->  [x] com.android.phone.eink.ims
+    ImsResolver: ImsService connection exists for
+        ComponentInfo{org.codeaurora.ims/org.codeaurora.ims.ImsService},
+        updating features [{s=1, f=MMTEL}, {s=0, f=EMERGENCY_MMTEL}, ...]
+    updateRegistrationState: NOT_REGISTERED -> REGISTERING -> REGISTERED
+
+Check `cmd overlay list` for the `[x]`, not just the registration state. An RRO
+that loses is silent — /e/OS ships a launcher overlay at priority 100 and ours
+needed 1000, with nothing logged when one is dropped — and a silently absent
+overlay looks exactly like the resource being the wrong one.
+
 RCS is deliberately left empty. This `ims.apk` registers MMTEL and
 EMERGENCY_MMTEL only; on Fairphone 4 RCS comes from a separate
 `ImsRcsService.apk` that this device does not have, and pointing
