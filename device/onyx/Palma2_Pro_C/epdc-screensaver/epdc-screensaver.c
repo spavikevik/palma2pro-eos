@@ -114,6 +114,24 @@
 #define LIGHT_SAVE  "/data/misc/epdc/frontlight.save"
 /* 1 = switch the frontlight off while the screensaver is up. */
 #define PROP_LIGHTOFF "persist.sys.epdc.screensaver_lightoff"
+
+/* Colour filter array.
+ *
+ * The panel has Kaleido CFA hardware (cfa_mode[1017] in devicetree) and turning
+ * it on visibly alters output -- it tinted a flash green, which is how we know
+ * the filters are physically there. But this unit's waveform file has no colour
+ * modes (gcc16[-1] glrc16[-1]), so CFA currently costs CONTRAST and returns
+ * nothing: greyscale artwork drawn through it comes out washed out.
+ *
+ * So it is switched off for the screensaver and put back on wake, for anyone
+ * who wants it on while using the device.
+ *
+ * TWO TRAPS. The argument is INVERTED -- 0 enables, non-zero disables -- and the
+ * driver logs "enable cfa mode!" for 0. And there is no getter, so the intended
+ * state cannot be read back; it lives in this property instead. 0 (off) is the
+ * default and the sane setting until colour waveforms exist. */
+#define EBC_ENABLE_CFA 0x7026
+#define PROP_CFA "persist.sys.epdc.cfa"
 #define PROP_WARMTH "persist.sys.epdc.screensaver_warmth"
 #define PROP_MAX    "persist.sys.frontlight.max"
 #define WARMTH_DEFAULT 32
@@ -148,6 +166,21 @@ struct upd {
 static int fd = -1;
 
 static int prop_int(const char *name, int fallback);
+
+/* on != 0 enables CFA. Handles the inverted ioctl argument so callers do not
+ * have to remember it. Opens its own fd: this runs outside the drawing path. */
+static void set_cfa(int on)
+{
+    int f = open(EBC_DEVICE_PATH, O_RDWR);
+    if (f < 0) return;
+    /* Zeroed page, never a bare int: these setters copy a struct in, and passing
+     * a small stack variable rebooted this device once. */
+    static unsigned char page[4096] __attribute__((aligned(4096)));
+    memset(page, 0, sizeof page);
+    ((int *)page)[0] = on ? 0 : 1;          /* inverted: 0 enables */
+    ioctl(f, EBC_ENABLE_CFA, page);
+    close(f);
+}
 
 static int read_int_file(const char *path, int fallback)
 {
@@ -368,6 +401,7 @@ static int pick(char *out, size_t outsz)
 static int refresh_from_fb(void)
 {
     frontlight_restore();
+    if (prop_int(PROP_CFA, 0)) set_cfa(1);
     fd = open(EBC_DEVICE_PATH, O_RDWR);
     if (fd < 0) return 1;
 
@@ -435,6 +469,9 @@ int main(int argc, char **argv)
         free(src);
         return 1;
     }
+
+    /* Before drawing, so the artwork itself is drawn without the filter. */
+    if (prop_int(PROP_CFA, 0)) set_cfa(0);
 
     if (set_scheme(SCHEME_HANDWRITE) != 0) {
         fprintf(stderr, "epdc-screensaver: scheme: %s\n", strerror(errno));
