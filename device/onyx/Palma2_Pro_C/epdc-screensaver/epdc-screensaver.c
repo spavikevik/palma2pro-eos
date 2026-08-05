@@ -120,14 +120,22 @@
  * ghosting through. It costs two extra full-panel updates -- about 1.2s of the
  * screensaver's 1.9s -- and it visibly flashes.
  *
- * Probably unnecessary here. --refresh does sync-then-draw with no rails and
- * comes out clean, and the same conditions hold at screen-off: the compositor
- * has been drawing right up to this point, so the 0x701d sync is live. The
- * rails were needed when DEFERRAL starved that sync (docs/22 section 14), which
- * is not this case.
+ * TESTED WITH THEM OFF, AND THEY EARN THEIR KEEP -- but not for the reason they
+ * were added. With the buffer seeded from the live framebuffer via 0x701d
+ * instead, the artwork does NOT ghost. It comes out washed out: blacks are not
+ * black and whites are not white.
  *
- * Left on by default until that is confirmed on the panel -- a fast screensaver
- * that ghosts is worse than a slow one that does not. 0 skips them. */
+ * That is the rails' real job. They are not only an anti-ghosting trick, they
+ * set CONTRAST. Saturating every pixel to both extremes means the image is then
+ * driven from a known state to its target, so it reaches true black and true
+ * white. Without it each pixel transitions from wherever it happened to be and
+ * the range compresses.
+ *
+ * So the cost is not avoidable by seeding the buffer, and the earlier guess
+ * that the rails were merely redundant was wrong. They are also NOT the time
+ * cost: measured 3.22s with them and 3.21s without, no difference.
+ *
+ * 0 skips them: faster in principle, visibly flatter in practice. Default 1. */
 #define PROP_CLEAR "persist.sys.epdc.screensaver_clear"
 
 /* Fallback only. Prefer wait_complete(): a fixed sleep is either too long --
