@@ -1168,3 +1168,60 @@ either level, under any aliasing. The `dither_mode` result should be treated as
 
 Both are cheap to falsify on the device -- send `dither_mode` 1..4 and `temp` 0
 against `0x1000` and look -- and that experiment has not been run.
+
+---
+
+## 14. The handwrite buffer goes stale if you suppress normal updates
+
+Using the settle pass to replace an app's animation looked sound and does not
+work, for a reason worth recording because it is circular.
+
+The settle paints through the handwrite path: set scheme 3, call `0x701d` to copy
+the live framebuffer into `virt_buf_handwrite`, submit with flags bit 18. Fine
+once. From the second settle onward the panel repeats **the same stale frame** on
+every refresh -- observed directly: the image beneath each flash is a page from
+earlier in the session, reappearing every time.
+
+`0x701d` is time-gated. From `onyx_epdc_ext_buf_sync_with_fb`:
+
+```
+if (fb_update_time < handwrite_time) return;    /* nothing to do */
+if (last_fb_time   < handwrite_time) return;
+```
+
+Our own handwrite update sets `handwrite_time` to now. `last_fb_time` is advanced
+by the driver when a normal framebuffer update happens -- and the whole point of
+the deferral was to stop those happening. So after the first settle,
+`last_fb_time` is permanently older than `handwrite_time`, the sync returns
+early, the buffer is never refreshed, and every subsequent settle redisplays
+whatever it held.
+
+**Suppressing normal updates starves the sync that the suppression depends on.**
+The mechanism cannot drive itself; it only works interleaved with real updates.
+
+That rules out this approach for animation suppression, and it does NOT rule out
+the screensaver (`device/onyx/Palma2_Pro_C/epdc-screensaver/`), which runs once
+after the compositor has been drawing normally -- exactly the case where the sync
+is live. It is worth checking that a second consecutive screensaver draw with no
+intervening compositor activity does not show the same staleness.
+
+### What was chased first, and was wrong
+
+Two rounds of waveform tuning, none of which could have helped:
+
+* `settlewf` set to the non-flashing REAGL modes (`glr16nm`, 9). The flashing
+  update was not the settle's -- it was the commit path drawing a second time
+  with GC16 full drive.
+* `settlemode`, which does nothing at all: section 13 established that the driver
+  never reads `update_mode`.
+
+The photograph settled it. Several page layouts were legible **simultaneously**,
+which no single flash produces -- that is `a2` (waveform 6) accumulating, since
+A2 is additive and lays each frame over the last without clearing. The inverted
+white-on-dark appearance was a camera catching GC16 mid-drive, which passes
+through the inverse before settling.
+
+Two lessons. Ask which *update* is misbehaving before choosing a waveform for it.
+And a photograph of the panel carried more information than every frame counter
+taken that day: the counters said "two updates per turn" and never once said
+"they are additive and piling up".
