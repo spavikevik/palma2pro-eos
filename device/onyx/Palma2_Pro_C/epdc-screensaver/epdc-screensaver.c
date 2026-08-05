@@ -108,7 +108,12 @@
  * would leave the panel amber all day.
  *
  * 0 disables, leaving the frontlight exactly as it was. */
+#define COOL_NODE   "/sys/class/backlight/onyx_bl_br/brightness"
 #define WARM_NODE   "/sys/class/backlight/onyx_bl_ct/brightness"
+/* Where the pre-sleep frontlight levels are parked so wake can put them back. */
+#define LIGHT_SAVE  "/data/misc/epdc/frontlight.save"
+/* 1 = switch the frontlight off while the screensaver is up. */
+#define PROP_LIGHTOFF "persist.sys.epdc.screensaver_lightoff"
 #define PROP_WARMTH "persist.sys.epdc.screensaver_warmth"
 #define PROP_MAX    "persist.sys.frontlight.max"
 #define WARMTH_DEFAULT 32
@@ -141,6 +146,74 @@ struct upd {
 };
 
 static int fd = -1;
+
+static int prop_int(const char *name, int fallback);
+
+static int read_int_file(const char *path, int fallback)
+{
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return fallback;
+    char buf[32];
+    ssize_t n = read(fd, buf, sizeof buf - 1);
+    close(fd);
+    if (n <= 0) return fallback;
+    buf[n] = 0;
+    return atoi(buf);
+}
+
+static void write_int_file(const char *path, int v)
+{
+    int fd = open(path, O_WRONLY);
+    if (fd < 0) return;
+    char buf[16];
+    int n = snprintf(buf, sizeof buf, "%d", v);
+    if (write(fd, buf, (size_t)n) < 0) { /* nothing useful to do */ }
+    close(fd);
+}
+
+/* Park the frontlight and switch it off.
+ *
+ * E-ink holds the image with no power at all, so a lit frontlight over a static
+ * screensaver is pure drain -- and on this build the light does NOT go off when
+ * the screen does, which is why it needs doing explicitly.
+ *
+ * The levels are written to a file rather than kept in memory because this is a
+ * oneshot: the process that turns the light off is long gone by the time
+ * anything restores it. Saved before zeroing, and only if a save does not
+ * already exist -- otherwise a second screensaver draw before any wake would
+ * overwrite the real levels with the zeros we just set. */
+static void frontlight_off(void)
+{
+    if (!prop_int(PROP_LIGHTOFF, 1)) return;
+
+    if (access(LIGHT_SAVE, F_OK) != 0) {
+        int cool = read_int_file(COOL_NODE, -1);
+        int warm = read_int_file(WARM_NODE, -1);
+        if (cool < 0 && warm < 0) return;          /* no frontlight here */
+        FILE *f = fopen(LIGHT_SAVE, "w");
+        if (!f) return;                            /* cannot restore -> do not turn off */
+        fprintf(f, "%d %d\n", cool < 0 ? 0 : cool, warm < 0 ? 0 : warm);
+        fclose(f);
+    }
+    write_int_file(COOL_NODE, 0);
+    write_int_file(WARM_NODE, 0);
+}
+
+/* Put the frontlight back, on wake. Removing the save afterwards is what makes
+ * the "already saved" check above safe. */
+static void frontlight_restore(void)
+{
+    FILE *f = fopen(LIGHT_SAVE, "r");
+    if (!f) return;
+    int cool = 0, warm = 0;
+    int got = fscanf(f, "%d %d", &cool, &warm);
+    fclose(f);
+    if (got == 2) {
+        write_int_file(COOL_NODE, cool);
+        write_int_file(WARM_NODE, warm);
+    }
+    unlink(LIGHT_SAVE);
+}
 
 static int prop_int(const char *name, int fallback)
 {
@@ -294,6 +367,7 @@ static int pick(char *out, size_t outsz)
  * deferral experiments violated -- see docs/22 section 14. */
 static int refresh_from_fb(void)
 {
+    frontlight_restore();
     fd = open(EBC_DEVICE_PATH, O_RDWR);
     if (fd < 0) return 1;
 
@@ -402,6 +476,7 @@ int main(int argc, char **argv)
     /* Warm the frontlight only once the artwork is actually up, so the light
      * does not shift while the clearing rails are still flashing. */
     set_warmth();
+    frontlight_off();
 
     /* Always hand the display back, or the compositor stays locked out and the
      * device appears frozen on the next wake. */
