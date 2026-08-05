@@ -198,7 +198,7 @@ build)
             #     ninja failed with: signal: killed
             # OOM-killed within minutes of ninja starting.
             #
-            # NINJA_HIGHMEM_NUM_JOBS caps soong's \"highmem\" pool, and it works
+            # NINJA_HIGHMEM_NUM_JOBS caps the soong highmem pool, and works
             # -- the generated ninja file carries \"pool highmem_pool / depth =
             # 6\". But it governs r8 and friends only. javac is NOT in that pool,
             # so it runs at full ninja parallelism, and javac is a JVM too. A
