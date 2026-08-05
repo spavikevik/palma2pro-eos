@@ -54,7 +54,8 @@
 
 #define EBC_DEVICE_PATH     "/dev/ebc"
 #define EBC_SYNC_FROM_FB    0x701d
-#define EBC_WAIT_COMPLETE   0x7010
+#define EBC_WAIT_COMPLETE   0x7010   /* waits for EVERY update in flight */
+#define EBC_WAIT_MARKER     0x700d   /* waits for ONE marker -- what we want */
 #define EBC_UPDATE_SCHEME   0x7006
 #define EBC_SEND_UPDATE     0x700c
 
@@ -149,9 +150,23 @@
  * SET_EBC_WAIT_ALL_UPDATE_COMPLETE. The driver has its own timeout on this
  * ("Timed out waiting for update marker"), so it cannot hang here
  * indefinitely. Falls back to the fixed sleep if the call is refused. */
-static void wait_complete(int f)
+static void wait_marker(int f, int32_t marker)
 {
-    if (ioctl(f, EBC_WAIT_COMPLETE, 0) != 0)
+    /* Wait for OUR update, not for every update in flight.
+     *
+     * 0x7010 (WAIT_ALL_UPDATE_COMPLETE) was used first and is the wrong call:
+     * it inherits whatever the compositor still has queued, so the wait length
+     * depends on unrelated work. That fit the symptoms exactly -- --refresh was
+     * fast at wake, when little is pending, and the screensaver slow at sleep,
+     * when plenty is.
+     *
+     * 0x700d takes a pointer to a single 4-byte marker (confirmed from the
+     * case body: a 4-byte copy_from_user) and waits only for that one. The
+     * driver has its own timeout, so this cannot hang.
+     *
+     * A marker of 0 means the submit failed; there is nothing to wait for. */
+    if (marker == 0) return;
+    if (ioctl(f, EBC_WAIT_MARKER, &marker) != 0)
         usleep(PASS_MS * 1000);
 }
 
@@ -203,7 +218,7 @@ static int32_t next_marker(void)
     return (int32_t)(((getpid() & 0x3fff) << 8) | (++n & 0xff)) | 1;
 }
 
-static int send_full(int wf)
+static int32_t send_full(int wf)
 {
     struct upd u;
     memset(&u, 0, sizeof u);
@@ -214,7 +229,8 @@ static int send_full(int wf)
     u.update_marker = next_marker();
     u.temp = 0x1000;                   /* TEMP_USE_AMBIENT */
     u.flags = EPDC_FLAG_STOCK | EPDC_FLAG_HANDWRITE;
-    return ioctl(fd, EBC_SEND_UPDATE, &u);
+    if (ioctl(fd, EBC_SEND_UPDATE, &u) != 0) return 0;
+    return u.update_marker;
 }
 
 static void blit(uint32_t *dst, const unsigned char *src, int channels)
@@ -329,11 +345,12 @@ static int refresh_from_fb(void)
     }
     if (ioctl(fd, EBC_SYNC_FROM_FB, 0) != 0)
         fprintf(stderr, "epdc-screensaver: sync: %s (continuing)\n", strerror(errno));
-    if (send_full(2) != 0) {
+    int32_t m = send_full(2);
+    if (m == 0) {
         fprintf(stderr, "epdc-screensaver: refresh: %s\n", strerror(errno));
         rc = 1;
     }
-    wait_complete(fd);
+    wait_marker(fd, m);
 out:
     set_scheme(SCHEME_NORMAL);
     close(fd);
@@ -414,8 +431,9 @@ int main(int argc, char **argv)
     int do_rails = prop_int(PROP_CLEAR, 1);
     for (int pass = 0; do_rails && pass < 2; pass++) {
         for (size_t i = 0; i < (size_t)PANEL_W * PANEL_H; i++) dst[i] = rails[pass];
-        if (send_full(2) != 0) break;
-        wait_complete(fd);
+        int32_t m = send_full(2);
+        if (m == 0) break;
+        wait_marker(fd, m);
     }
 
     if (!do_rails)
@@ -424,9 +442,10 @@ int main(int argc, char **argv)
     blit(dst, src, channels);
     free(src);
 
-    if (send_full(2) != 0)
+    int32_t m = send_full(2);
+    if (m == 0)
         fprintf(stderr, "epdc-screensaver: update: %s\n", strerror(errno));
-    wait_complete(fd);
+    wait_marker(fd, m);
 
     /* Warm the frontlight only once the artwork is actually up, so the light
      * does not shift while the clearing rails are still flashing. */
