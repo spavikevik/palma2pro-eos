@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 14 split android.hardware.telephony into sub-features. Voice calling
+  is gated on android.hardware.telephony.calling, and this device declares only
+  telephony, .gsm, .cdma and .ims.
+
+  Without .calling the framework treats the device as non-calling: AudioService
+  does not hold MODE_IN_CALL for an IMS call, so audio_hw sets mode 2, then
+  immediately mode 0, and tears the voice path down while the call is active.
+  Observed exactly that way, with voice_start_call never invoked and voice_extn
+  update_calls stuck at state 1.
+
+  The other sub-features are declared alongside it because the same split
+  introduced them and this device supports all of them in practice: data and
+  messaging already work, and the radio is registered.
+-->
+<permissions>
+    <feature name="android.hardware.telephony.calling" />
+    <feature name="android.hardware.telephony.data" />
+    <feature name="android.hardware.telephony.messaging" />
+    <feature name="android.hardware.telephony.radio.access" />
+    <feature name="android.hardware.telephony.subscription" />
+</permissions>
