@@ -40,6 +40,7 @@
  */
 
 #include <dirent.h>
+#include <sys/system_properties.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
@@ -51,6 +52,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#define EBC_DEVICE_PATH     "/dev/ebc"
+#define EBC_SYNC_FROM_FB    0x701d
+#define EBC_WAIT_COMPLETE   0x7010
 #define EBC_UPDATE_SCHEME   0x7006
 #define EBC_SEND_UPDATE     0x700c
 
@@ -84,8 +88,47 @@
 #define EPDC_SS_STOCK "/system/etc/epdc/screensaver"
 #define EPDC_SS_INDEX "/data/misc/epdc/screensaver.idx"
 
-/* A full-panel GC16 is ~33 frames, a bit under half a second. */
+/* Frontlight warmth while the screensaver is up.
+ *
+ * This device has no backlight. It has a frontlight built from two independently
+ * driven LED strings, each 0..32:
+ *
+ *     /sys/class/backlight/onyx_bl_br/brightness   cool
+ *     /sys/class/backlight/onyx_bl_ct/brightness   warm
+ *
+ * The frontlight does NOT go off when the screen does on this build -- measured,
+ * onyx_bl_br reads the same value asleep as awake -- so the artwork is lit, and
+ * a warmer light suits a picture you are looking at in a dark room.
+ *
+ * Nothing here restores the previous value. It does not need to: LightsService
+ * recomputes the frontlight from SCREEN_BRIGHTNESS whenever brightness changes,
+ * and puts warmth back to persist.sys.frontlight.warmth. Waking the device is
+ * enough. Deliberately not saving and restoring it ourselves -- a oneshot that
+ * exits cannot be relied on to run its own cleanup, and getting that wrong
+ * would leave the panel amber all day.
+ *
+ * 0 disables, leaving the frontlight exactly as it was. */
+#define WARM_NODE   "/sys/class/backlight/onyx_bl_ct/brightness"
+#define PROP_WARMTH "persist.sys.epdc.screensaver_warmth"
+#define PROP_MAX    "persist.sys.frontlight.max"
+#define WARMTH_DEFAULT 32
+
+/* Fallback only. Prefer wait_complete(): a fixed sleep is either too long --
+ * which is what made the screensaver take 2-3s and the wake refresh a couple of
+ * seconds, three and one of these respectively -- or too short, which races the
+ * scheme restore against an update still in flight. */
 #define PASS_MS 550
+
+/* Block until the driver says every update has finished.
+ *
+ * SET_EBC_WAIT_ALL_UPDATE_COMPLETE. The driver has its own timeout on this
+ * ("Timed out waiting for update marker"), so it cannot hang here
+ * indefinitely. Falls back to the fixed sleep if the call is refused. */
+static void wait_complete(int f)
+{
+    if (ioctl(f, EBC_WAIT_COMPLETE, 0) != 0)
+        usleep(PASS_MS * 1000);
+}
 
 struct upd {
     int32_t rect[4];
@@ -98,6 +141,30 @@ struct upd {
 };
 
 static int fd = -1;
+
+static int prop_int(const char *name, int fallback)
+{
+    char buf[PROP_VALUE_MAX];
+    if (__system_property_get(name, buf) <= 0) return fallback;
+    int v = atoi(buf);
+    return v;
+}
+
+/* Best-effort: an unwritable or absent node must never stop the screensaver. */
+static void set_warmth(void)
+{
+    int max = prop_int(PROP_MAX, 32);
+    int want = prop_int(PROP_WARMTH, WARMTH_DEFAULT);
+    if (want <= 0) return;
+    if (want > max) want = max;
+
+    int fd = open(WARM_NODE, O_WRONLY);
+    if (fd < 0) return;
+    char buf[16];
+    int n = snprintf(buf, sizeof buf, "%d", want);
+    if (write(fd, buf, (size_t)n) < 0) { /* nothing useful to do */ }
+    close(fd);
+}
 
 static int set_scheme(int v)
 {
@@ -208,8 +275,51 @@ static int pick(char *out, size_t outsz)
     return 0;
 }
 
-int main(void)
+/* Redraw the whole panel from what is currently composited.
+ *
+ * Called on wake. The screensaver painted through the HANDWRITE path, so the
+ * driver's record of the displayed image is the artwork. The lockscreen then
+ * composites through the normal path with per-layer damage, which updates only
+ * the regions that changed -- and the artwork stays visible underneath
+ * everywhere else.
+ *
+ * Drawing the lockscreen through the same handwrite path fixes that at the
+ * source: 0x701d copies the live framebuffer in, and the driver computes the
+ * transition from the frame it actually put on the glass. One full-panel update,
+ * no clearing rails -- the rails are only needed when the driver's record is
+ * stale, and here it is exactly right.
+ *
+ * The sync is live at this point because the compositor is running and drawing
+ * the lockscreen, so last_fb_time is advancing. That is the condition the
+ * deferral experiments violated -- see docs/22 section 14. */
+static int refresh_from_fb(void)
 {
+    fd = open(EBC_DEVICE_PATH, O_RDWR);
+    if (fd < 0) return 1;
+
+    int rc = 0;
+    if (set_scheme(SCHEME_HANDWRITE) != 0) {
+        rc = 1;
+        goto out;
+    }
+    if (ioctl(fd, EBC_SYNC_FROM_FB, 0) != 0)
+        fprintf(stderr, "epdc-screensaver: sync: %s (continuing)\n", strerror(errno));
+    if (send_full(2) != 0) {
+        fprintf(stderr, "epdc-screensaver: refresh: %s\n", strerror(errno));
+        rc = 1;
+    }
+    wait_complete(fd);
+out:
+    set_scheme(SCHEME_NORMAL);
+    close(fd);
+    return rc;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc > 1 && strcmp(argv[1], "--refresh") == 0)
+        return refresh_from_fb();
+
     char path[512];
     if (pick(path, sizeof path) != 0) {
         /* No artwork installed is not an error -- the feature is simply off. */
@@ -279,7 +389,7 @@ int main(void)
     for (int pass = 0; pass < 2; pass++) {
         for (size_t i = 0; i < (size_t)PANEL_W * PANEL_H; i++) dst[i] = rails[pass];
         if (send_full(2) != 0) break;
-        usleep(PASS_MS * 1000);
+        wait_complete(fd);
     }
 
     blit(dst, src, channels);
@@ -287,7 +397,11 @@ int main(void)
 
     if (send_full(2) != 0)
         fprintf(stderr, "epdc-screensaver: update: %s\n", strerror(errno));
-    usleep(PASS_MS * 1000);
+    wait_complete(fd);
+
+    /* Warm the frontlight only once the artwork is actually up, so the light
+     * does not shift while the clearing rails are still flashing. */
+    set_warmth();
 
     /* Always hand the display back, or the compositor stays locked out and the
      * device appears frozen on the next wake. */

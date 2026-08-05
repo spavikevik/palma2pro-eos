@@ -26,6 +26,27 @@ service epdc_screensaver /system/bin/epdc-screensaver
 on property:debug.tracing.screen_state=1
     start epdc_screensaver
 
+# And redraw the whole panel on wake.
+#
+# The screensaver paints through the handwrite path, so the driver's record of
+# what is displayed is the artwork. The lockscreen then composites through the
+# normal path with per-layer damage, updating only what changed -- and the
+# artwork remains visible everywhere else, so the lockscreen appears drawn on
+# top of the picture rather than replacing it.
+#
+# One full-panel redraw through the same handwrite path fixes it, because the
+# driver then computes the transition from the frame actually on the glass.
+service epdc_refresh /system/bin/epdc-screensaver --refresh
+    class late_start
+    user system
+    group system graphics
+    oneshot
+    disabled
+    seclabel u:r:su:s0
+
+on property:debug.tracing.screen_state=2
+    start epdc_refresh
+
 # Artwork lives here; gen-screensaver.py writes the pre-dithered planes.
 on post-fs-data
     mkdir /data/misc/epdc 0771 system system
