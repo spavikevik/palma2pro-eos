@@ -50,10 +50,17 @@ TXN_SET_PARAMETERS=20            # FIRST_CALL_TRANSACTION + 19, from the tree
 CALL_ACTIVE=2
 CALL_INACTIVE=1
 
-# Legacy five-session model, which is what this HAL reports. VoLTE first: it is
-# the one that matters here, and injecting a vsid the HAL does not know logs
-# "invalid vsid" rather than doing damage, so the fallbacks are safe to try.
-VSIDS_DEFAULT="0x10C02000 0x11C05000 0x10C01000"
+# The HAL keeps seven sessions. VOICEMMODE1 is the one that works on this
+# device, confirmed on a live call: it starts usecase voicemmode1-call and
+# exits status(0).
+#
+# The legacy VoLTE vsid 0x10C02000 looks like the obvious choice and is not. It
+# is accepted, and update_calls does take it INACTIVE -> ACTIVE, but then
+# voice_start_usecase() fails for usecase 38. Accepting a vsid says only that
+# the HAL knows the constant, not that the modem has a session behind it. It is
+# kept in the list as a fallback, second, because a wrong vsid fails loudly and
+# harmlessly.
+VSIDS_DEFAULT="0x11C05000 0x10C02000 0x10C01000"
 VSIDS="${VSIDS:-$VSIDS_DEFAULT}"
 
 adbsh() { adb shell "$@" 2>/dev/null; }
@@ -69,10 +76,16 @@ if [ "${1:-}" = "--clear" ]; then
     exit 0
 fi
 
-# "- mode (internal) = IN_CALL". The internal one is what AudioFlinger passed to
-# the HAL, which is the value the voice path actually keys off.
-hal_mode()  { adbsh 'dumpsys audio 2>/dev/null | grep -m1 "mode (internal)"'; }
-in_call()   { hal_mode | grep -q 'IN_CALL'; }
+# Trigger on the HAL's own log line, not on dumpsys. Polling `dumpsys audio`
+# missed a real call outright: each poll costs a second or two, and the window
+# closes while you are still asking. This blocks until the HAL itself says it
+# entered the mode, and returns the instant it does.
+#
+# mode 2 is AUDIO_MODE_IN_CALL. Do not confuse it with Java's AudioManager,
+# where IN_CALL is 2 but IN_COMMUNICATION is 3; audio_mode_t and AudioManager
+# happen to agree here, but forcing "mode 3" by hand tests IN_COMMUNICATION and
+# proves nothing.
+wait_in_call() { adbsh "logcat -v brief | grep -m1 'adev_set_mode: mode 2 '"; }
 pcm_state() { adbsh 'for d in 2 15; do printf "pcm%s=%s " $d "$(cat /proc/asound/card0/pcm${d}p/sub0/status 2>/dev/null | head -1)"; done'; }
 
 set_params() {
@@ -90,18 +103,14 @@ echo "==> baseline: $(pcm_state)"
 echo
 echo "PLACE A CALL NOW. Waiting for the framework to enter IN_CALL mode..."
 
-for _ in $(seq 120); do
-    in_call && break
-    sleep 1
-done
-
-if ! in_call; then
-    echo "timed out -- HAL never entered IN_CALL. Nothing to probe." >&2
-    echo "  mode reported: $(hal_mode)" >&2
+if ! timeout "${WAIT:-180}" bash -c "$(declare -f adbsh wait_in_call); wait_in_call"; then
+    echo "timed out -- the HAL never entered AUDIO_MODE_IN_CALL." >&2
+    echo "  Either no call was placed, or the framework is not holding the mode;" >&2
+    echo "  check that android.hardware.telephony.calling is still installed." >&2
     exit 1
 fi
 
-echo "==> IN_CALL. $(hal_mode)"
+echo "==> HAL entered AUDIO_MODE_IN_CALL"
 echo "==> voice PCMs before injection: $(pcm_state)"
 
 started=""

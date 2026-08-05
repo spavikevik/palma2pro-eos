@@ -115,11 +115,49 @@ not enough; the voice PCMs stay `closed`.
 So the decisive experiment requires a real call. `scripts/volte-audio-probe.sh`
 waits for the framework to enter `IN_CALL` and injects then.
 
-**This step has not been run yet.** Until it has, the diagnosis above rests on
-the absence of a client plus the HAL's control flow, which is strong but is not
-the same as having seen audio appear.
+### The probe, on a live call
 
-## The fix, if the probe confirms it
+Ran it. The diagnosis holds.
+
+First, the negative result, which is the stronger half. Across an entire call
+the only `update_calls` the HAL performs on its own is this one, at call start,
+when the framework opens the voice output stream and `voice_start_call` sets
+`voice.in_call`:
+
+    update_calls: cur_state=1 new_state=1 vsid=10c01000
+    ... seven sessions, every one INACTIVE -> INACTIVE
+
+and one more at teardown when the mode drops back to `NORMAL`. Nothing else,
+ever. No component sends `vsid`/`call_state`, exactly as predicted.
+
+Then the injection, mid-call:
+
+    adev_set_parameters: enter: call_state=2;vsid=0x11C05000
+    update_call_states is_call_active:0 in_call:1, mode:2
+    update_calls: cur_state=1 new_state=2 vsid=11c05000
+    update_calls: INACTIVE -> ACTIVE vsid:11c05000
+    voice_start_usecase: enter usecase:voicemmode1-call
+    ACDB -> send_voice_cal, acdb_rx = 7, acdb_tx = 41
+    voice_config.rate 8000
+    voice_set_sidetone: enable, out_snd_device: 25
+    voice_start_usecase: exit: status(0)
+
+`/proc/asound/card0/pcm2p/sub0/status` went from `closed` to `RUNNING`.
+Calibration loaded, sidetone on, handset device selected, status 0. The voice
+path comes up completely, and the *only* thing it was waiting for is a
+notification nothing on this device sends.
+
+### Which vsid
+
+`0x11C05000`, VOICEMMODE1. Not the legacy VoLTE `0x10C02000`, which is the
+obvious guess and is wrong: the HAL accepts it and `update_calls` does take it
+`INACTIVE -> ACTIVE`, but `voice_start_usecase()` then fails for usecase 38.
+
+Worth stating plainly, because it nearly became a sixth wrong root cause: a vsid
+being accepted means only that the HAL knows the constant. It says nothing about
+whether the modem has a session behind it.
+
+## The fix
 
 A small daemon that does what the missing QTI component does: get
 `IQcRilAudio/slot1`, register an `IQcRilAudioCallback`, and forward
