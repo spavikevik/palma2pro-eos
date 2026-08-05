@@ -132,6 +132,12 @@
  * default and the sane setting until colour waveforms exist. */
 #define EBC_ENABLE_CFA 0x7026
 #define PROP_CFA "persist.sys.epdc.cfa"
+
+/* The property init triggers on. Read again here, at the moment we actually
+ * run, because the trigger is not proof the screen is still in that state. */
+#define PROP_SCREEN "debug.tracing.screen_state"
+#define SCREEN_OFF 1
+#define SCREEN_ON  2
 #define PROP_WARMTH "persist.sys.epdc.screensaver_warmth"
 #define PROP_MAX    "persist.sys.frontlight.max"
 #define WARMTH_DEFAULT 32
@@ -425,8 +431,23 @@ out:
 
 int main(int argc, char **argv)
 {
-    if (argc > 1 && strcmp(argv[1], "--refresh") == 0)
+    /* Act only if the screen is STILL in the state we were triggered for.
+     *
+     * debug.tracing.screen_state passes through 1 again partway through the wake
+     * transition, which fires the screensaver a second time -- after the wake
+     * refresh has already restored the frontlight and CFA. The screensaver then
+     * switches both off again on a screen that is now on, which looked exactly
+     * like "the restore does not work" and is not: the restore ran correctly and
+     * was undone about three seconds later.
+     *
+     * init cannot express "and still is", so the check belongs here. */
+    int screen = prop_int(PROP_SCREEN, 0);
+
+    if (argc > 1 && strcmp(argv[1], "--refresh") == 0) {
+        if (screen != SCREEN_ON) return 0;
         return refresh_from_fb();
+    }
+    if (screen != SCREEN_OFF) return 0;
 
     char path[512];
     if (pick(path, sizeof path) != 0) {
