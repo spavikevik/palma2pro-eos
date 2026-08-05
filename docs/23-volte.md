@@ -61,17 +61,61 @@ which travels `adev_set_parameters` → `voice_set_parameters` →
 `voice_extn_set_parameters` → `update_call_states` → `start_call`, and only
 there does the HAL open the `VoiceMMode` PCMs.
 
-**There is no such client on this device.** Scanning `/system`, `/system_ext`,
+**There is no such client on our build.** Scanning `/system`, `/system_ext`,
 `/product`, `/vendor` and `/apex` for `IQcRilAudio` returns exactly two files:
 
     /vendor/lib64/libril-qc-hal-qmi.so                    qcrild's own server
     /vendor/lib64/vendor.qti.hardware.radio.am@1.0.so     the HIDL stub
 
-Stock Onyx firmware is the same. Its `/system` mentions the interface once, in
-`/system/etc/vintf/compatibility_matrix.device.xml` — the framework *declares*
-it requires the HAL — and ships nothing that ever binds to it. So this was not
-lost in the port. The bridge was never built, which is consistent with a device
-that was never meant to place calls.
+**Stock Onyx is not the same, and this document said for some hours that it
+was.** [C] Stock ships
+`/system_ext/app/QtiTelephonyService/QtiTelephonyService.apk`, package
+`com.qualcomm.qti.telephonyservice`, whose dex contains
+
+    com/qualcomm/qti/telephonyservice/QcRilAudioHidl
+    com/qualcomm/qti/telephonyservice/QcRilAudioAidl
+    com/qualcomm/qti/telephonyservice/BootReceiver
+
+— the client, in both HIDL and stable-AIDL flavours, started at boot. So this is
+an ordinary **missing blob**, dropped when the port replaced `system_ext` with
+/e/OS's. Not something Onyx never had.
+
+### How the wrong version survived
+
+The scan was `grep IQcRilAudio` over every file in every partition, on the
+device and in the stock images. It found nothing outside `/vendor`, and that was
+read as evidence of absence.
+
+It was evidence of nothing. **`classes.dex` is deflate-compressed inside an
+APK**, so no string in any Java class is greppable from the outside. The scan
+could not have found a client written in Java — which every implementation of
+this thing happens to be.
+
+The downstream reasoning was sound and the fix is unaffected, but "I searched
+and found nothing" was worth exactly nothing here. Worth keeping for the shape
+of it: a negative result from a tool that cannot see the thing it is looking for
+is indistinguishable from a real absence, and reads far more convincingly.
+
+### What other builds do
+
+From a GitHub code search for `IQcRilAudioCallback`, plus the blob lists:
+
+| build | where the client comes from |
+|---|---|
+| stock QTI / QSSI, including stock Onyx | `QtiTelephonyService.apk`, `com.qualcomm.qti.telephonyservice` — proprietary |
+| LineageOS / /e/OS **Fairphone 4** | the same blob — `proprietary-files.txt` line 815, `system_ext/app/QtiTelephonyService/QtiTelephonyService.apk` |
+| Sony devices, OmniROM | [`QcRilAm`](https://github.com/sonyxperiadev/QcRilAm), Apache-2.0 reimplementation |
+| phh GSIs, some device trees | `QtiAudio`, `me.phh.qti.audio.Service` |
+| Sailfish / Droidian | [`audiosystem-passthrough`](https://github.com/mer-hybris/audiosystem-passthrough), native C |
+
+The server side is Qualcomm's `qcril_qmi_audio_service.cc` in `qcril-hal`, which
+matches the `QcRilAudioImpl` strings in our `libril-qc-hal-qmi.so`.
+
+So FP4 uses the blob. The earlier question here — "how does FP4 manage without
+one" — was an artefact of the same bad scan and is withdrawn.
+
+We use `QcRilAm` rather than the stock blob anyway: it is Apache-2.0 and can
+ship in a published image, which `QtiTelephonyService.apk` cannot.
 
 Every voice session therefore stays `INACTIVE` for the whole call, the voice
 PCMs are never opened, and there is no audio.
@@ -159,26 +203,49 @@ whether the modem has a session behind it.
 
 ## The fix
 
-A small daemon that does what the missing QTI component does: get
-`IQcRilAudio/slot1`, register an `IQcRilAudioCallback`, and forward
-`setParameters` / `getParameters` to the audio HAL.
+Do not write one. It already exists, is open source, and is redistributable.
 
-The obstacle is the interface definition. `IQcRilAudio.hal` is not in our tree.
-Options, best first:
+**[sonyxperiadev/QcRilAm](https://github.com/sonyxperiadev/QcRilAm)**,
+Apache-2.0, ~70 lines of Kotlin. It does exactly and only the missing thing:
 
-1. Add the CodeLinaro `vendor/qcom/opensource/interfaces` repo to the manifest.
-   BSD-3-Clause, and the provenance is clean and citable.
-2. Reconstruct the four-line `.hal` from the stub's symbols. The signatures are
-   known exactly. Method order is not — but HIDL assigns transaction codes in
-   declaration order, and with two methods of different signatures a wrong guess
-   fails the transaction rather than doing damage, so it is empirically
-   resolvable.
+```kotlin
+val qcRilAudio = IQcRilAudio.getService("slot$simSlotNo", true /*retry*/)
+qcRilAudio.setCallback(object : IQcRilAudioCallback.Stub() {
+    override fun getParameters(keys: String?)         = audioManager.getParameters(keys)
+    override fun setParameters(keyValuePairs: String?): Int {
+        audioManager.setParameters(keyValuePairs)
+        return 0
+    }
+})
+```
 
-Prefer 1. Reconstructing an interface is a licensing question as much as a
-technical one, and the repo that legitimately publishes it is available.
+A persistent, direct-boot-aware service started from `BOOT_COMPLETED`, one
+callback per SIM slot. The repository also carries the two `.hal` files, which
+[phhusson](https://github.com/phhusson/treble_experimentations) reconstructed
+for GSI use — so the interface definition comes with it and the CodeLinaro
+manifest addition is unnecessary.
 
-Do not build any of this before the probe reports. The point of the probe is to
-find out whether the notification is the *only* missing piece.
+Vendored at `device/onyx/Palma2_Pro_C/qcrilam/`. See `PROVENANCE.md` there and
+the entry in `THIRD_PARTY.md`. Source is byte-identical to upstream; only
+`Android.bp` changed, twice: `subdirs` dropped because Soong removed it, and
+`proprietary: true` → `system_ext_specific: true` because we never flash vendor
+on this device.
+
+Worth recording how well the independent derivation held up. The interface was
+worked out from the device alone — method names from the HIDL transport symbols
+in `vendor.qti.hardware.radio.am@1.0.so`, direction from qcrild's own log
+strings — before upstream was found. It agrees exactly, including the order of
+`setCallback` and `setError`. The one thing the device could not have told us is
+that both are `oneway`.
+
+Two things the vendored app still needs, neither yet done:
+
+- **`PRODUCT_PACKAGES += QcRilAm`** in `device.mk`. That is a `.mk` edit and
+  therefore a full kati regeneration, so it is worth doing once, after the
+  pushed APK has been shown to work — not as part of iterating.
+- **sepolicy.** A `system_ext` app reaching a vendor HIDL service needs a rule.
+  This build is permissive, so it will work without one and break the day it
+  stops being permissive.
 
 ## Wrong turns, recorded
 

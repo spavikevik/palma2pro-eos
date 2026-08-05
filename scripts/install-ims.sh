@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 # install-ims -- put a QTI ImsService on the device, to get VoLTE signalling up.
 #
-# STATUS: calls CONNECT, audio does NOT work. See docs/23 and issue #20 before
-# spending time here. The remaining blocker is modem side and nothing in this
-# script addresses it.
+# STATUS: this gets SIGNALLING up -- calls connect. It does not get you audio,
+# and for a while this header claimed the remaining blocker was modem side. It
+# is not. See docs/23-volte.md.
+#
+# Audio needs a client for vendor.qti.hardware.radio.am@1.0::IQcRilAudio, which
+# tells the audio HAL a call went active. The build ships one: QcRilAm, at
+# device/onyx/Palma2_Pro_C/qcrilam/, Apache-2.0, installed automatically. If you
+# need the stock proprietary one instead, scripts/extract-qti-telephony.sh pulls
+# it from your own firmware -- but install exactly one of the two.
 #
 # WHY THIS EXISTS AT ALL
 # ----------------------

@@ -24,12 +24,29 @@ distributed.
 
 ## Code copied into this repository
 
-**None.** No third-party source file has been copied in. Every `.c` / `.h` under
-`src/` was written for this project.
+**One thing:** `device/onyx/Palma2_Pro_C/qcrilam/`, from
+[sonyxperiadev/QcRilAm](https://github.com/sonyxperiadev/QcRilAm) at
+`ef51ec6` (2020-05-27), **Apache-2.0**, © The Android Open Source Project
+2018–2020, Kotlin rewrite by Pavel Dubrova. The `.hal` interface definitions in
+it come from
+[phhusson/treble_experimentations](https://github.com/phhusson/treble_experimentations).
 
-The closest thing is `src/epdc_damage.h`, whose *shape* follows the ordinary
-seqlock pattern, and `patches/main/0002-*.patch`, which is a diff against AOSP
-and therefore inherits AOSP's licence when applied (below).
+It is the client for `vendor.qti.hardware.radio.am@1.0::IQcRilAudio`, without
+which calls connect and carry no audio. Source files are byte-identical to
+upstream; only `Android.bp` differs, in two places, both documented inline there
+and in the directory's `PROVENANCE.md`.
+
+Stock Onyx ships this same function inside `QtiTelephonyService.apk`
+(`com.qualcomm.qti.telephonyservice`), which is Qualcomm proprietary; the port
+replaced `system_ext` and lost it, and Fairphone 4 builds solve the same problem
+by extracting that blob. We deliberately use the Apache-2.0 reimplementation
+instead, so that unlike the QTI `ims.apk` this piece **may be redistributed** in
+a published image.
+
+Everything else is ours: every `.c` / `.h` under `src/` was written for this
+project. The closest calls are `src/epdc_damage.h`, whose *shape* follows the
+ordinary seqlock pattern, and `patches/main/0002-*.patch`, which is a diff
+against AOSP and therefore inherits AOSP's licence when applied (below).
 
 ---
 
