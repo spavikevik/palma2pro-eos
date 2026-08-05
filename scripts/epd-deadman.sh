@@ -45,6 +45,30 @@ STAMP=/data/local/tmp/epd-deadman.armed
 PIDF=/data/local/tmp/epd-deadman.pid
 
 case "$1" in
+run)
+    # Arm, run a command, and ALWAYS disarm -- even if the command fails, is
+    # interrupted, or the adb connection drops mid-way.
+    #
+    # This exists because `arm` followed by a separate `disarm` rebooted this
+    # device twice in one session. Both times the command in between died and
+    # the disarm never ran, so the timer fired on a perfectly healthy device.
+    # The deadman worked exactly as designed; using it in two steps is the
+    # mistake. Prefer this form.
+    #
+    #   epd-deadman.sh run 30 -- some-risky-command --args
+    SECS="${2:-30}"
+    shift 2 2>/dev/null || true
+    [ "${1:-}" = "--" ] && shift
+    [ $# -gt 0 ] || { echo "usage: $0 run [seconds] -- <command>" >&2; exit 2; }
+    "$0" arm "$SECS" >/dev/null
+    trap '"$0" disarm >/dev/null 2>&1' EXIT INT TERM HUP
+    "$@"
+    rc=$?
+    "$0" disarm >/dev/null
+    trap - EXIT INT TERM HUP
+    exit $rc
+    ;;
+
 arm)
     SECS="${2:-30}"
     "$0" disarm >/dev/null 2>&1
@@ -73,7 +97,7 @@ status)
     else echo "disarmed"; fi
     ;;
 *)
-    echo "usage: $0 arm [seconds] | disarm | status" >&2
+    echo "usage: $0 run [secs] -- <cmd> | arm [secs] | disarm | status" >&2
     exit 2
     ;;
 esac

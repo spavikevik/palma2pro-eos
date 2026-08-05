@@ -113,6 +113,23 @@
 #define PROP_MAX    "persist.sys.frontlight.max"
 #define WARMTH_DEFAULT 32
 
+/* Clearing rails before the artwork.
+ *
+ * Driving every pixel to black then white makes the driver's stale record of
+ * the displayed image irrelevant, which is what stops the previous screen
+ * ghosting through. It costs two extra full-panel updates -- about 1.2s of the
+ * screensaver's 1.9s -- and it visibly flashes.
+ *
+ * Probably unnecessary here. --refresh does sync-then-draw with no rails and
+ * comes out clean, and the same conditions hold at screen-off: the compositor
+ * has been drawing right up to this point, so the 0x701d sync is live. The
+ * rails were needed when DEFERRAL starved that sync (docs/22 section 14), which
+ * is not this case.
+ *
+ * Left on by default until that is confirmed on the panel -- a fast screensaver
+ * that ghosts is worse than a slow one that does not. 0 skips them. */
+#define PROP_CLEAR "persist.sys.epdc.screensaver_clear"
+
 /* Fallback only. Prefer wait_complete(): a fixed sleep is either too long --
  * which is what made the screensaver take 2-3s and the wake refresh a couple of
  * seconds, three and one of these respectively -- or too short, which races the
@@ -386,11 +403,15 @@ int main(int argc, char **argv)
      * so the ~1.1s and the visible flashing cost nothing here.
      */
     static const uint32_t rails[2] = { 0xff000000u, 0xffffffffu };
-    for (int pass = 0; pass < 2; pass++) {
+    int do_rails = prop_int(PROP_CLEAR, 1);
+    for (int pass = 0; do_rails && pass < 2; pass++) {
         for (size_t i = 0; i < (size_t)PANEL_W * PANEL_H; i++) dst[i] = rails[pass];
         if (send_full(2) != 0) break;
         wait_complete(fd);
     }
+
+    if (!do_rails)
+        ioctl(fd, EBC_SYNC_FROM_FB, 0);   /* same basis --refresh relies on */
 
     blit(dst, src, channels);
     free(src);
