@@ -24,29 +24,21 @@ distributed.
 
 ## Code copied into this repository
 
-**One thing:** `device/onyx/Palma2_Pro_C/qcrilam/`, from
-[sonyxperiadev/QcRilAm](https://github.com/sonyxperiadev/QcRilAm) at
-`ef51ec6` (2020-05-27), **Apache-2.0**, © The Android Open Source Project
-2018–2020, Kotlin rewrite by Pavel Dubrova. The `.hal` interface definitions in
-it come from
-[phhusson/treble_experimentations](https://github.com/phhusson/treble_experimentations).
+**None.** No third-party source file is copied in. Every `.c` / `.h` under
+`src/` was written for this project.
 
-It is the client for `vendor.qti.hardware.radio.am@1.0::IQcRilAudio`, without
-which calls connect and carry no audio. Source files are byte-identical to
-upstream; only `Android.bp` differs, in two places, both documented inline there
-and in the directory's `PROVENANCE.md`.
+The closest calls are `src/epdc_damage.h`, whose *shape* follows the ordinary
+seqlock pattern, and `patches/main/0002-*.patch`, which is a diff against AOSP
+and therefore inherits AOSP's licence when applied (below).
 
-Stock Onyx ships this same function inside `QtiTelephonyService.apk`
-(`com.qualcomm.qti.telephonyservice`), which is Qualcomm proprietary; the port
-replaced `system_ext` and lost it, and Fairphone 4 builds solve the same problem
-by extracting that blob. We deliberately use the Apache-2.0 reimplementation
-instead, so that unlike the QTI `ims.apk` this piece **may be redistributed** in
-a published image.
-
-Everything else is ours: every `.c` / `.h` under `src/` was written for this
-project. The closest calls are `src/epdc_damage.h`, whose *shape* follows the
-ordinary seqlock pattern, and `patches/main/0002-*.patch`, which is a diff
-against AOSP and therefore inherits AOSP's licence when applied (below).
+This section briefly said otherwise. `device/onyx/Palma2_Pro_C/qcrilam/` carried
+[sonyxperiadev/QcRilAm](https://github.com/sonyxperiadev/QcRilAm) (Apache-2.0,
+`ef51ec6`) as the client for
+`vendor.qti.hardware.radio.am@1.0::IQcRilAudio`, without which VoLTE calls
+connect silently. It was removed in favour of the stock proprietary equivalent —
+reasoning in `docs/23-volte.md` — and remains in git history. Nothing from it
+ships today, but it is credited under *Ideas* below, because reading it
+confirmed an interface we had otherwise derived by hand.
 
 ---
 
@@ -108,6 +100,20 @@ Format reference for the `.wbf` waveform blob pulled from this device
 **Fairphone 4** — the ABL used to unlock this device came from FP4 firmware,
 which shares the SM7225 SoC. Qualcomm proprietary; used locally, not
 redistributed. `docs/02`.
+
+**`sonyxperiadev/QcRilAm`** — Apache-2.0, and
+**`phhusson/treble_experimentations`** — for the two `.hal` files it
+reconstructed for GSI use. The `IQcRilAudio` / `IQcRilAudioCallback` interface
+had already been derived here from the HIDL transport symbols in
+`vendor.qti.hardware.radio.am@1.0.so` and from qcrild's own log strings; reading
+theirs confirmed it exactly, including the declaration order of `setCallback`
+and `setError`, which the device could not have told us. `docs/23-volte.md`.
+
+**QTI `QtiTelephonyService.apk` and `ims.apk`** — Qualcomm proprietary.
+Extracted from firmware the user already owns, into gitignored `firmware/`, and
+never redistributed by this repository. `scripts/extract-qti-telephony.sh` and
+`scripts/install-ims.sh` fetch them locally. Both are required for VoLTE, which
+is why no image this project publishes can place a call.
 
 ---
 

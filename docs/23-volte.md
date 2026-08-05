@@ -1,13 +1,15 @@
 # VoLTE on a device that was never meant to make calls
 
-Signalling works: calls connect, both ways. There is no audio in either
-direction. This is the record of why.
+Calls connect and carry audio in both directions. Getting there took two
+separate fixes and a diagnosis that was wrong twice; this is the record.
 
 ## What Onyx shipped
 
 The Palma 2 Pro is a reader with a modem. It does data and SMS. The stock
-firmware has no dialer, no ImsService, and — the subject of this document — no
-bridge between the radio and the audio HAL.
+firmware has no dialer and no ImsService, so it cannot place a call — but its
+lower layers are a phone's, and it *does* carry the radio-to-audio bridge that
+is the subject of most of this document. Our port dropped that bridge; stock
+never lacked it.
 
 What it *does* have is a complete vendor radio stack: `qcrild`,
 `vendor.qti.hardware.radio.ims@1.0` through `1.7`, the QMI daemons, and a modem
@@ -32,6 +34,18 @@ sub-feature, and without it the framework will not hold `MODE_IN_CALL`.
 
 Six things, each hiding the next. After all six, calls connect.
 
+**This route is probably not the best one, and the reason it was taken is a
+mistake.** Onyx ships its own `org.codeaurora.ims` — the same package — at
+`/system_ext/priv-app/ims/ims.apk`, 1754379 bytes, built for this device's own
+vendor stack. Stock also carries `QtiDialer`, `QtiTelephony` and
+`QualcommVoiceActivation` beside it. The original search for it covered stock
+`system` and `product` and never looked in `system_ext`, which is where it is.
+
+Half of the six problems above come from mixing two devices' framework jars —
+the `ims-ext-common.jar` living in `product` on FP4, the rewritten library XMLs,
+the symlinked native libs. Using Onyx's own APK and jars should avoid all of
+that. Untried.
+
 ## Where the audio stops
 
 On a QTI stack the audio HAL does not learn about calls from the framework. It
@@ -55,7 +69,7 @@ A client implements `IQcRilAudioCallback` and registers it via
 `IQcRilAudio::setCallback`. When a call goes active, `qcrild` invokes the
 callback with
 
-    vsid=0x10C02000;call_state=2
+    vsid=0x11C05000;call_type=LTE;call_state=2
 
 which travels `adev_set_parameters` → `voice_set_parameters` →
 `voice_extn_set_parameters` → `update_call_states` → `start_call`, and only
@@ -114,11 +128,8 @@ matches the `QcRilAudioImpl` strings in our `libril-qc-hal-qmi.so`.
 So FP4 uses the blob. The earlier question here — "how does FP4 manage without
 one" — was an artefact of the same bad scan and is withdrawn.
 
-We use `QcRilAm` rather than the stock blob anyway: it is Apache-2.0 and can
-ship in a published image, which `QtiTelephonyService.apk` cannot.
-
-Every voice session therefore stays `INACTIVE` for the whole call, the voice
-PCMs are never opened, and there is no audio.
+Without a client, every voice session stays `INACTIVE` for the whole call, the
+voice PCMs are never opened, and there is no audio.
 
 ## Everything else checks out
 
@@ -203,10 +214,53 @@ whether the modem has a session behind it.
 
 ## The fix
 
-Do not write one. It already exists, is open source, and is redistributable.
+Put the stock client back. `scripts/extract-qti-telephony.sh` pulls
+`QtiTelephonyService.apk` out of `firmware/super.img`, installs it, and installs
+the allowlist it needs on our build.
 
-**[sonyxperiadev/QcRilAm](https://github.com/sonyxperiadev/QcRilAm)**,
-Apache-2.0, ~70 lines of Kotlin. It does exactly and only the missing thing:
+Verified on a live call with no manual injection anywhere:
+
+    19:07:34.466  adev_set_mode: mode 2 , prev_mode 0
+    19:07:34.736  update_calls: INACTIVE -> ACTIVE vsid:11c05000
+    19:07:34.736  voice_start_usecase: enter usecase:voicemmode1-call
+    19:07:34.737  ACDB -> send_voice_cal, acdb_rx = 7, acdb_tx = 41
+    19:07:56.157  voice_stop_usecase: enter usecase:voicemmode1-call
+    19:07:57.136  adev_set_mode: mode 0
+
+270 ms from mode change to session start. Audio works in both directions, and
+teardown is clean — `pcm2` returns to `closed`, unlike the hand injection, which
+left a session running after hangup because nothing sent `call_state=1`.
+
+The parameters it sends are `vsid=0x11C05000;call_type=LTE;call_state=2`. The
+vsid is exactly the one derived by hand; `call_type` is extra and the manual
+probe never sent it.
+
+### It must be privileged here, though stock runs it unprivileged
+
+The app wants `MODIFY_AUDIO_ROUTING`, which is `signature|privileged`. Stock
+satisfies the signature half — the APK is signed with Onyx's platform key — so
+it sits unprivileged in `/system_ext/app` and works.
+
+Our build has a different platform key, so that half can never match and the
+permission has to come from the privileged half instead: `/system_ext/priv-app`
+plus `device/onyx/Palma2_Pro_C/telephony/privapp-permissions-qtitelephony.xml`.
+
+Installed stock-style, it fails in a way that reads like a code bug rather than
+a permissions problem:
+
+    SecurityException: Not allowed to monitor audioserver state
+    NullPointerException ... AudioController.updateAudioCallbacks
+        at QtiTelephonyService.onCreate(QtiTelephonyService.java:109)
+
+`AudioController` never constructs, the field stays null, and since the app is
+`android:persistent` the framework restarts it forever. Worth remembering
+generally: a signature-guarded blob that "works on stock" may be relying on a
+key you do not have, and the failure surfaces well downstream of the cause.
+
+### Why not the free implementation
+
+[sonyxperiadev/QcRilAm](https://github.com/sonyxperiadev/QcRilAm) is Apache-2.0,
+about 70 lines of Kotlin, and does exactly this job:
 
 ```kotlin
 val qcRilAudio = IQcRilAudio.getService("slot$simSlotNo", true /*retry*/)
@@ -219,33 +273,24 @@ qcRilAudio.setCallback(object : IQcRilAudioCallback.Stub() {
 })
 ```
 
-A persistent, direct-boot-aware service started from `BOOT_COMPLETED`, one
-callback per SIM slot. The repository also carries the two `.hal` files, which
-[phhusson](https://github.com/phhusson/treble_experimentations) reconstructed
-for GSI use — so the interface definition comes with it and the CodeLinaro
-manifest addition is unnecessary.
+It was vendored here and then removed. The argument for it was that a published
+image could ship it. That argument does not survive contact with the rest of the
+stack: **VoLTE signalling already requires the proprietary `ims.apk`**, so no
+published image can place a call regardless, and anyone building this extracts
+blobs anyway. The redistributability bought nothing real.
 
-Vendored at `device/onyx/Palma2_Pro_C/qcrilam/`. See `PROVENANCE.md` there and
-the entry in `THIRD_PARTY.md`. Source is byte-identical to upstream; only
-`Android.bp` changed, twice: `subdirs` dropped because Soong removed it, and
-`proprietary: true` → `system_ext_specific: true` because we never flash vendor
-on this device.
+Against that, the stock APK is what Onyx shipped and tested on this exact vendor
+stack, and it demonstrably handles teardown and `call_type` correctly. It is in
+git history if the reasoning ever changes.
 
-Worth recording how well the independent derivation held up. The interface was
-worked out from the device alone — method names from the HIDL transport symbols
-in `vendor.qti.hardware.radio.am@1.0.so`, direction from qcrild's own log
-strings — before upstream was found. It agrees exactly, including the order of
-`setCallback` and `setError`. The one thing the device could not have told us is
-that both are `oneway`.
+Do not install both. qcrild keeps a single `mQcRilAudioCallback`, so whichever
+registers last silently wins.
 
-Two things the vendored app still needs, neither yet done:
+### Still owed
 
-- **`PRODUCT_PACKAGES += QcRilAm`** in `device.mk`. That is a `.mk` edit and
-  therefore a full kati regeneration, so it is worth doing once, after the
-  pushed APK has been shown to work — not as part of iterating.
-- **sepolicy.** A `system_ext` app reaching a vendor HIDL service needs a rule.
-  This build is permissive, so it will work without one and break the day it
-  stops being permissive.
+**sepolicy.** A `system_ext` priv-app reaching a vendor HIDL service needs a
+rule. This build is permissive, so it works without one and will break the day
+it stops being permissive.
 
 ## Wrong turns, recorded
 

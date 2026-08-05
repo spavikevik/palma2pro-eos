@@ -6,18 +6,30 @@
 # is not. See docs/23-volte.md.
 #
 # Audio needs a client for vendor.qti.hardware.radio.am@1.0::IQcRilAudio, which
-# tells the audio HAL a call went active. The build ships one: QcRilAm, at
-# device/onyx/Palma2_Pro_C/qcrilam/, Apache-2.0, installed automatically. If you
-# need the stock proprietary one instead, scripts/extract-qti-telephony.sh pulls
-# it from your own firmware -- but install exactly one of the two.
+# tells the audio HAL a call went active. Install it with
+# scripts/extract-qti-telephony.sh, which pulls the stock one out of your own
+# firmware dump. Run both scripts; neither is sufficient alone.
 #
 # WHY THIS EXISTS AT ALL
 # ----------------------
 # Onyx ships the whole vendor IMS stack -- vendor.qti.hardware.radio.ims@1.0
-# through 1.7, the daemons, five libs -- and no framework client for it. Their
-# ImsService is absent from stock system and product, so it was never lost in
-# the port; it was never there. Consistent with a reader that has a modem for
-# data and SMS and was never meant to place calls.
+# through 1.7, the daemons, five libs -- and /e/OS ships no framework client for
+# it, so calls cannot be placed.
+#
+# CORRECTION. This header used to say Onyx's own ImsService "was never there".
+# That was wrong, and wrong because the search only covered stock system and
+# product. It lives in system_ext:
+#
+#   /system_ext/priv-app/ims/ims.apk   package org.codeaurora.ims, 1754379 bytes
+#
+# the same package this script installs from a Fairphone 4 build, but built for
+# this device's own vendor stack. Stock also carries QtiDialer, QtiTelephony and
+# QualcommVoiceActivation in the same directory.
+#
+# So the FP4 route below is not the only option and probably not the best one --
+# it mixes two devices' framework jars, which is where several of the six
+# problems listed further down came from. Using Onyx's own APK and jars has not
+# been tried. See docs/23-volte.md.
 #
 # WHERE THE PIECES COME FROM
 # --------------------------

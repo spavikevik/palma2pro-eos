@@ -226,20 +226,3 @@ PRODUCT_COPY_FILES += \
 # animation, and animation is what costs panel refreshes.
 PRODUCT_PROPERTY_OVERRIDES += \
     qemu.hw.mainkeys=0
-
-# VoLTE audio.
-#
-# The port dropped the client for vendor.qti.hardware.radio.am@1.0::IQcRilAudio.
-# Stock carries it inside QtiTelephonyService.apk, a QTI blob in system_ext that
-# /e/OS's system_ext replaced. Without it qcrild has nothing to hand
-# "vsid=...;call_state=2" to, the audio HAL never opens the VoiceMMode PCMs, and
-# calls connect silently in both directions.
-#
-# QcRilAm is that client, vendored from sonyxperiadev under Apache-2.0 -- so
-# unlike the ims.apk this one may actually ship. See qcrilam/PROVENANCE.md,
-# THIRD_PARTY.md and docs/23-volte.md.
-#
-# Note this only carries the notification. Signalling still needs the ImsService
-# installed by scripts/install-ims.sh, which is a QTI blob and is NOT built in.
-PRODUCT_PACKAGES += \
-    QcRilAm
