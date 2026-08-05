@@ -819,10 +819,34 @@ int drmModeAtomicCommit(int fd, void *req, u32 flags, void *user_data)
             return real_commit(fd, req, flags, user_data);
         }
         if (defer_pending) {
-            /* Quiet again (or the bound was hit): draw the settled frame. */
             defer_pending = 0;
             deferred_frames = 0;
-            dmg_full = 1;              /* full flash, clears the old page */
+
+            /* Let the SETTLE draw it, not this commit.
+             *
+             * Drawing here was the source of both remaining complaints. It went
+             * through init_parms with force_full, which selects t_wf (GC16) and
+             * t_cleanmode (1) -- a full drive, which takes every pixel through
+             * black on its way to the new page. That is the black flash. It also
+             * meant every page turn was painted twice, once here and once by the
+             * settle, and during a finger drag the intermediate frames that got
+             * through here are the animation that was still visible.
+             *
+             * The settle thread can paint the live screen on its own through the
+             * handwrite path, needing no commit from the app, so there is nothing
+             * this commit adds except the flash. Suppress it too and let the
+             * settle be the only writer while deferring.
+             *
+             * Only when a settle is actually configured. With settlems 0 nothing
+             * else would ever draw, and a page turn that renders nothing is worse
+             * than one that flashes. */
+            if (t_settlems > 0) {
+                g_settle_pending = 1;
+                start_settle_thread();
+                n_pend = 0;
+                return real_commit(fd, req, flags, user_data);
+            }
+            dmg_full = 1;              /* no settle configured: draw here */
         }
     }
 
