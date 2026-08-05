@@ -34,17 +34,38 @@ sub-feature, and without it the framework will not hold `MODE_IN_CALL`.
 
 Six things, each hiding the next. After all six, calls connect.
 
-**This route is probably not the best one, and the reason it was taken is a
-mistake.** Onyx ships its own `org.codeaurora.ims` — the same package — at
-`/system_ext/priv-app/ims/ims.apk`, 1754379 bytes, built for this device's own
-vendor stack. Stock also carries `QtiDialer`, `QtiTelephony` and
-`QualcommVoiceActivation` beside it. The original search for it covered stock
-`system` and `product` and never looked in `system_ext`, which is where it is.
+### Superseded: use Onyx's own ImsService
 
-Half of the six problems above come from mixing two devices' framework jars —
-the `ims-ext-common.jar` living in `product` on FP4, the rewritten library XMLs,
-the symlinked native libs. Using Onyx's own APK and jars should avoid all of
-that. Untried.
+The FP4 route was a mistake of searching. Onyx ships the same package at
+`/system_ext/priv-app/ims/ims.apk` — 1754379 bytes, `org.codeaurora.ims`, built
+for this device's own vendor stack, alongside `QtiDialer`, `QtiTelephony` and
+`QualcommVoiceActivation`. The original hunt covered stock `system` and
+`product` and never looked in `system_ext`.
+
+Stock is Android 15 / SDK 35, exactly like our build, so the version-match
+argument that picked FP4 does not favour FP4 either.
+
+`scripts/install-ims-stock.sh` uses it instead, and it is much smaller:
+
+| | FP4 route | stock route |
+|---|---|---|
+| framework jars | 20 | 3 |
+| library XMLs | rewritten, because `ims-ext-common.jar` lives in `product` on FP4 and this device has no `/product/framework` | used as shipped |
+| privapp allowlist | written by hand for the FP4 APK | byte-identical permission set to stock's, so ours is reused unchanged |
+
+Onyx's APK declares exactly two `uses-library` entries, `qti-telephony-utils`
+and `qti-telephony-hidl-wrapper`, both shipped in `/system_ext/framework` with
+declarations already pointing there. Nothing needs rewriting. Verified on
+device: `REGISTRATION_STATE_NOT_REGISTERED` → `REGISTRATION_STATE_REGISTERED`,
+with a SIP URI on DOCOMO's `dcmip.net`.
+
+One trap carries over unchanged. In `/priv-app/ims/lib/arm64` the two `.so`
+files are **symlinks** into `/system_ext/lib64` — mode `120644`, sizes 36 and 37,
+which is just the length of the target path. Copy the directory entries and you
+get zero-byte files, and `dlopen` fails with `file offset >= file size: 0 >= 0`.
+The real ones come from `/lib64`.
+
+`install-ims.sh` is kept as a fallback for anyone without a stock dump.
 
 ## Where the audio stops
 
@@ -285,6 +306,29 @@ git history if the reasoning ever changes.
 
 Do not install both. qcrild keeps a single `mQcRilAudioCallback`, so whichever
 registers last silently wins.
+
+### Making the designation survive a reboot
+
+`cmd phone ims set-ims-service` writes a runtime override that is not persisted.
+After every reboot the device sat on LTE advertising `VOICE` and could not
+register until someone re-ran it by hand — which looks exactly like a regression
+in whatever changed just before the reboot, and was read that way more than once
+here.
+
+`PhoneGlobals` reads `config_ims_mmtel_package` **once** at startup and hands it
+to `ImsResolver.make()`. That string is a resource of `com.android.phone`, empty
+by default in `packages/services/Telephony/res/values/config.xml`, so an RRO on
+that package is enough. The carrier-config route (`config_ims_mmtel_package_override_string`)
+would also work but costs more: CarrierConfig reads its own *assets*, not
+resources, so it cannot be overlaid and the app has to be rebuilt.
+
+`device/onyx/Palma2_Pro_C/rro/PhoneImsService/` sets it to `org.codeaurora.ims`.
+
+RCS is deliberately left empty. This `ims.apk` registers MMTEL and
+EMERGENCY_MMTEL only; on Fairphone 4 RCS comes from a separate
+`ImsRcsService.apk` that this device does not have, and pointing
+`config_ims_rcs_package` at a package with no RCS feature leaves `ImsResolver`
+waiting for a binding that never arrives.
 
 ### Still owed
 

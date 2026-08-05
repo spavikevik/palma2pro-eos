@@ -192,6 +192,15 @@ PRODUCT_PACKAGES += \
     BlissLauncherEinkOverlay \
     FrameworkEinkOverlay
 
+# Names org.codeaurora.ims as the device ImsService, so VoLTE signalling comes
+# up on its own. Without it, `cmd phone ims set-ims-service` has to be re-run by
+# hand after every reboot -- that override is not persisted anywhere, and a
+# rebooted device looks exactly like a regression in whatever changed last.
+# Overrides a com.android.phone resource, not a framework-res one, hence a
+# separate overlay from FrameworkEink. See rro/PhoneImsService/.
+PRODUCT_PACKAGES += \
+    PhoneImsServiceOverlay
+
 # E-ink lock screensaver.
 #
 # An e-ink panel holds its last frame with no power, so locking the device

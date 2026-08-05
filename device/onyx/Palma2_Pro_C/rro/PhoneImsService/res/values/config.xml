@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Package name of the device ImsService implementation for MMTEL.
+         Empty in packages/services/Telephony/res/values/config.xml. -->
+    <string name="config_ims_mmtel_package" translatable="false">org.codeaurora.ims</string>
+</resources>
